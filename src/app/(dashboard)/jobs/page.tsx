@@ -11,8 +11,10 @@ import { NeuSelect } from '@/components/neu/NeuSelect';
 import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { Plus, Search, ClipboardList, Download, Filter } from 'lucide-react';
+import { Plus, Search, ClipboardList, Download, Filter, Trash2 } from 'lucide-react';
 import { format, isToday, isThisWeek, isThisMonth, parseISO } from 'date-fns';
+import { toast } from '@/store/toastStore';
+import { playSuccess, playError } from '@/lib/audio';
 
 export default function JobsPage() {
   const supabase = createClient();
@@ -21,6 +23,7 @@ export default function JobsPage() {
   const [search, setSearch] = useState('');
   const [timeFilter, setTimeFilter] = useState('all'); // all, today, week, month
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   // Form state
   const [title, setTitle] = useState('');
@@ -70,16 +73,37 @@ export default function JobsPage() {
         .insert([newJob])
         .select('*');
 
-      if (!error && data) {
-        setJobs([data[0], ...jobs]);
+      if (!error && data && data.length > 0) {
+        setJobs(prev => [data[0], ...prev]);
+        playSuccess();
+        toast.success('Work Order Created', 'New job has been recorded in the database.');
+      } else if (error) {
+        throw error;
       }
     } catch (err) {
       console.error('Work order insert error:', err);
+      playError();
+      toast.error('Creation Failed', 'Could not record work order in backend.');
     }
 
     setIsModalOpen(false);
     setTitle('');
     setDescription('');
+  };
+
+  const handleDeleteJob = async (id: string) => {
+    try {
+      const { error } = await supabase.from('work_orders').delete().eq('id', id);
+      if (error) throw error;
+      setJobs(prev => prev.filter(j => j.id !== id));
+      playSuccess();
+      toast.success('Work Order Removed', 'The job record has been deleted from the database.');
+    } catch (err) {
+      console.error('Delete job error:', err);
+      playError();
+      toast.error('Deletion Failed', 'Could not delete the work order.');
+    }
+    setDeleteId(null);
   };
 
   const getStatusBadge = (status: string) => {
@@ -171,6 +195,22 @@ export default function JobsPage() {
       accessorKey: 'status',
       header: 'Status',
       cell: (info: any) => getStatusBadge(info.getValue())
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      cell: (info: any) => (
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            setDeleteId(info.row.original.id);
+          }}
+          className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+          title="Delete Work Order"
+        >
+          <Trash2 size={18} />
+        </button>
+      )
     },
   ];
 
@@ -302,6 +342,21 @@ export default function JobsPage() {
             </NeuButton>
           </div>
         </form>
+      </NeuModal>
+
+      {/* Delete Confirmation Modal */}
+      <NeuModal isOpen={!!deleteId} onClose={() => setDeleteId(null)} title="Confirm Deletion">
+        <div className="space-y-4">
+          <p className="text-neu-fg">Are you sure you want to delete this work order from the backend database?</p>
+          <div className="flex justify-end gap-3 pt-4">
+            <NeuButton type="button" variant="secondary" onClick={() => setDeleteId(null)}>
+              Cancel
+            </NeuButton>
+            <NeuButton onClick={() => { if (deleteId) handleDeleteJob(deleteId); }}>
+              Yes, Delete
+            </NeuButton>
+          </div>
+        </div>
       </NeuModal>
     </div>
   );

@@ -41,16 +41,17 @@ export function VSyncerLogo({ size = 'md', showText = true, className = '' }: Lo
         >
           <defs>
             <linearGradient id="vLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#6C63FF" />
-              <stop offset="100%" stopColor="#38B2AC" />
+              <stop offset="0%" stopColor="#2563EB" />
+              <stop offset="50%" stopColor="#0F4C81" />
+              <stop offset="100%" stopColor="#10B981" />
             </linearGradient>
             <filter id="glowShadow" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#6C63FF" floodOpacity="0.4" />
+              <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#2563EB" floodOpacity="0.35" />
             </filter>
           </defs>
           {/* Main Dynamic V Structure */}
           <path 
-            d="M8 10L20 32L32 10" 
+            d="M7 11L20 31L33 11" 
             stroke="url(#vLogoGrad)" 
             strokeWidth="5" 
             strokeLinecap="round" 
@@ -58,9 +59,9 @@ export function VSyncerLogo({ size = 'md', showText = true, className = '' }: Lo
             filter="url(#glowShadow)"
           />
           {/* Sync Nodes */}
-          <circle cx="8" cy="10" r="3" fill="#6C63FF" />
-          <circle cx="32" cy="10" r="3" fill="#38B2AC" />
-          <circle cx="20" cy="32" r="3.5" fill="#6C63FF" />
+          <circle cx="7" cy="11" r="3.2" fill="#2563EB" />
+          <circle cx="33" cy="11" r="3.2" fill="#10B981" />
+          <circle cx="20" cy="31" r="3.8" fill="#0F4C81" />
         </svg>
       </div>
 
