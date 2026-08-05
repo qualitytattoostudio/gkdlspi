@@ -249,8 +249,8 @@ export default function ProcurementPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-        <StatCard title="Total Procurement Value" value={`₹${totalProcurement.toLocaleString()}`} icon={DollarSign} />
-        <StatCard title="Settled / Paid Invoices" value={`₹${totalPaid.toLocaleString()}`} icon={CheckCircle2} />
+        <StatCard title="Total Procurement Value" value={totalProcurement} prefix="₹" icon={DollarSign} />
+        <StatCard title="Settled / Paid Invoices" value={totalPaid} prefix="₹" icon={CheckCircle2} />
         <StatCard title="Unpaid / Pending Bills" value={pendingInvoices} icon={Clock} />
       </div>
 

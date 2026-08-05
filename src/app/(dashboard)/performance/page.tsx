@@ -24,7 +24,7 @@ export default function PerformancePage() {
         <div>
           <div className="flex items-center gap-3">
             <h2 className="text-2xl font-display font-bold text-neu-fg">Performance & Goals</h2>
-            <NeuBadge variant="warning" size="md">Coming Soon</NeuBadge>
+            <NeuBadge variant="warning">Coming Soon</NeuBadge>
           </div>
           <p className="text-neu-muted text-sm mt-1">
             Enterprise employee appraisal, KPI tracking, and automated goal metrics engine.
