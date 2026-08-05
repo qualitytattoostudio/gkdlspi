@@ -11,7 +11,7 @@ import { NeuSelect } from '@/components/neu/NeuSelect';
 import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { Plus, Search, ClipboardList, Download, Filter, Trash2 } from 'lucide-react';
+import { Plus, Search, ClipboardList, Download, Filter, Trash2, Edit } from 'lucide-react';
 import { format, isToday, isThisWeek, isThisMonth, parseISO } from 'date-fns';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
@@ -24,6 +24,15 @@ export default function JobsPage() {
   const [timeFilter, setTimeFilter] = useState('all'); // all, today, week, month
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [editJob, setEditJob] = useState<any | null>(null);
+
+  // Edit form state
+  const [editTitle, setEditTitle] = useState('');
+  const [editWoType, setEditWoType] = useState('Deep Cleaning');
+  const [editScheduledDate, setEditScheduledDate] = useState('');
+  const [editPriority, setEditPriority] = useState('medium');
+  const [editStatus, setEditStatus] = useState('pending');
+  const [editDescription, setEditDescription] = useState('');
 
   // Form state
   const [title, setTitle] = useState('');
@@ -89,6 +98,50 @@ export default function JobsPage() {
     setIsModalOpen(false);
     setTitle('');
     setDescription('');
+  };
+
+  const openEditModal = (job: any) => {
+    setEditJob(job);
+    setEditTitle(job.title || '');
+    setEditWoType(job.wo_type || 'Deep Cleaning');
+    setEditScheduledDate(job.scheduled_date ? format(new Date(job.scheduled_date), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'));
+    setEditPriority(job.priority || 'medium');
+    setEditStatus(job.status || 'pending');
+    setEditDescription(job.description || '');
+  };
+
+  const handleUpdateJob = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editJob) return;
+
+    const updatedFields = {
+      title: editTitle,
+      wo_type: editWoType,
+      scheduled_date: editScheduledDate || null,
+      priority: editPriority,
+      status: editStatus,
+      description: editDescription,
+      updated_at: new Date().toISOString(),
+    };
+
+    try {
+      const { data, error } = await supabase
+        .from('work_orders')
+        .update(updatedFields)
+        .eq('id', editJob.id)
+        .select('*');
+
+      if (!error && data && data.length > 0) {
+        setJobs(prev => prev.map(j => j.id === editJob.id ? data[0] : j));
+        playSuccess();
+        toast.success('Work Order Updated', 'Job details updated in database.');
+      } else if (error) throw error;
+    } catch (err) {
+      console.error('Update job error:', err);
+      playError();
+      toast.error('Update Failed', 'Could not update work order.');
+    }
+    setEditJob(null);
   };
 
   const handleDeleteJob = async (id: string) => {
@@ -200,16 +253,28 @@ export default function JobsPage() {
       id: 'actions',
       header: 'Actions',
       cell: (info: any) => (
-        <button 
-          onClick={(e) => {
-            e.stopPropagation();
-            setDeleteId(info.row.original.id);
-          }}
-          className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-          title="Delete Work Order"
-        >
-          <Trash2 size={18} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button 
+            onClick={(e) => {
+              e.stopPropagation();
+              openEditModal(info.row.original);
+            }}
+            className="p-2 text-neu-accent hover:bg-neu-accent/10 rounded-lg transition-colors"
+            title="Edit Work Order"
+          >
+            <Edit size={18} />
+          </button>
+          <button 
+            onClick={(e) => {
+              e.stopPropagation();
+              setDeleteId(info.row.original.id);
+            }}
+            className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+            title="Delete Work Order"
+          >
+            <Trash2 size={18} />
+          </button>
+        </div>
       )
     },
   ];
@@ -357,6 +422,74 @@ export default function JobsPage() {
             </NeuButton>
           </div>
         </div>
+      </NeuModal>
+
+      {/* Edit Job Modal */}
+      <NeuModal isOpen={!!editJob} onClose={() => setEditJob(null)} title="Edit Work Order Details">
+        <form onSubmit={handleUpdateJob} className="space-y-4">
+          <NeuInput 
+            label="Work Order Title" 
+            value={editTitle} 
+            onChange={(e) => setEditTitle(e.target.value)} 
+            required
+          />
+          <NeuSelect 
+            label="Service Scope" 
+            options={[
+              { label: 'Deep Cleaning & Sanitization', value: 'Deep Cleaning' },
+              { label: 'Carpet Shampooing & Extraction', value: 'Carpet Shampooing' },
+              { label: 'High Rise Window Wash', value: 'Window Wash' },
+              { label: 'Marble Floor Polishing', value: 'Floor Polishing' },
+              { label: 'Post-Construction Cleanup', value: 'Post-Construction' },
+            ]} 
+            value={editWoType}
+            onChange={(e) => setEditWoType(e.target.value)}
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <NeuInput 
+              label="Scheduled Date" 
+              type="date"
+              value={editScheduledDate} 
+              onChange={(e) => setEditScheduledDate(e.target.value)} 
+            />
+            <NeuSelect 
+              label="Priority Level" 
+              options={[
+                { label: 'Emergency / Urgent', value: 'emergency' },
+                { label: 'High Priority', value: 'high' },
+                { label: 'Medium Priority', value: 'medium' },
+                { label: 'Low Priority', value: 'low' },
+              ]} 
+              value={editPriority}
+              onChange={(e) => setEditPriority(e.target.value)}
+            />
+            <NeuSelect 
+              label="Job Status" 
+              options={[
+                { label: 'Pending', value: 'pending' },
+                { label: 'Scheduled', value: 'scheduled' },
+                { label: 'In Progress', value: 'in-progress' },
+                { label: 'Completed', value: 'completed' },
+                { label: 'Cancelled', value: 'cancelled' },
+              ]} 
+              value={editStatus}
+              onChange={(e) => setEditStatus(e.target.value)}
+            />
+          </div>
+          <NeuInput 
+            label="Job Description / Instructions" 
+            value={editDescription} 
+            onChange={(e) => setEditDescription(e.target.value)} 
+          />
+          <div className="flex justify-end gap-3 pt-4">
+            <NeuButton type="button" variant="secondary" onClick={() => setEditJob(null)}>
+              Cancel
+            </NeuButton>
+            <NeuButton type="submit">
+              Update Work Order
+            </NeuButton>
+          </div>
+        </form>
       </NeuModal>
     </div>
   );
