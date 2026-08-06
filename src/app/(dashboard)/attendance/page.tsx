@@ -12,7 +12,8 @@ import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { Search, Clock, Download, Plus, Filter } from 'lucide-react';
-import { format, isToday, isThisWeek, isThisMonth, parseISO } from 'date-fns';
+import { format } from 'date-fns';
+import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 
 export default function AttendancePage() {
   const supabase = createClient();
@@ -38,12 +39,11 @@ export default function AttendancePage() {
             *,
             profiles!attendance_records_user_id_fkey(full_name)
           `)
-          .order('date', { ascending: false })
-          .limit(100);
+          .order('date', { ascending: false });
 
         const { data, error } = await query;
         if (error) {
-          const { data: fallbackData } = await supabase.from('attendance_records').select('*').order('date', { ascending: false }).limit(100);
+          const { data: fallbackData } = await supabase.from('attendance_records').select('*').order('date', { ascending: false });
           setAttendance(fallbackData || []);
         } else {
           setAttendance(data || []);
@@ -83,19 +83,8 @@ export default function AttendancePage() {
 
   const filteredAttendance = attendance.filter(a => {
     const matchesSearch = (a.profiles?.full_name || '').toLowerCase().includes(search.toLowerCase());
-    
     if (!matchesSearch) return false;
-    
-    if (timeFilter === 'all') return true;
-    
-    if (!a.date) return false;
-    const dateToCheck = parseISO(a.date);
-
-    if (timeFilter === 'today') return isToday(dateToCheck);
-    if (timeFilter === 'week') return isThisWeek(dateToCheck);
-    if (timeFilter === 'month') return isThisMonth(dateToCheck);
-
-    return true;
+    return matchesTimeFilter(a.date || a.check_in_time, timeFilter);
   });
 
   const exportCSV = () => {
@@ -199,12 +188,7 @@ export default function AttendancePage() {
             <NeuSelect 
               value={timeFilter}
               onChange={(e) => setTimeFilter(e.target.value)}
-              options={[
-                { label: 'All Time', value: 'all' },
-                { label: 'Today', value: 'today' },
-                { label: 'This Week', value: 'week' },
-                { label: 'This Month', value: 'month' },
-              ]}
+              options={MONTH_FILTER_OPTIONS}
             />
           </div>
         </NeuCard>

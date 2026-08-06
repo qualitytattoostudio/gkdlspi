@@ -12,7 +12,8 @@ import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { Plus, Search, Package, ArrowDown, ArrowUp, Download, Filter, Trash2 } from 'lucide-react';
-import { format, isAfter, subDays, subMonths } from 'date-fns';
+import { format } from 'date-fns';
+import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 import Papa from 'papaparse';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
@@ -41,8 +42,7 @@ export default function InventoryPage() {
         const { data: txData, error } = await supabase
           .from('inventory_transactions')
           .select('*')
-          .order('created_at', { ascending: false })
-          .limit(100);
+          .order('created_at', { ascending: false });
 
         if (error) throw error;
 
@@ -135,16 +135,7 @@ export default function InventoryPage() {
       (t.notes || '').toLowerCase().includes(search.toLowerCase()) ||
       (t.performed_by || '').toLowerCase().includes(search.toLowerCase());
 
-    let matchesTime = true;
-    if (timeFilter === 'today') {
-      matchesTime = isAfter(new Date(t.created_at), subDays(new Date(), 1));
-    } else if (timeFilter === 'week') {
-      matchesTime = isAfter(new Date(t.created_at), subDays(new Date(), 7));
-    } else if (timeFilter === 'month') {
-      matchesTime = isAfter(new Date(t.created_at), subMonths(new Date(), 1));
-    }
-
-    return matchesSearch && matchesTime;
+    return matchesSearch && matchesTimeFilter(t.created_at, timeFilter);
   });
 
   const exportCSV = () => {
@@ -249,12 +240,7 @@ export default function InventoryPage() {
             <NeuSelect 
               value={timeFilter}
               onChange={(e) => setTimeFilter(e.target.value)}
-              options={[
-                { label: 'All Time', value: 'all' },
-                { label: 'Logged Today', value: 'today' },
-                { label: 'Logged This Week', value: 'week' },
-                { label: 'Logged This Month', value: 'month' },
-              ]}
+              options={MONTH_FILTER_OPTIONS}
             />
           </div>
           <NeuButton variant="secondary" onClick={exportCSV} className="shrink-0">

@@ -12,7 +12,8 @@ import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { Plus, Search, ClipboardList, Download, Filter, Trash2, Edit } from 'lucide-react';
-import { format, isToday, isThisWeek, isThisMonth, parseISO } from 'date-fns';
+import { format } from 'date-fns';
+import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
 
@@ -183,17 +184,7 @@ export default function JobsPage() {
       (job.wo_type || '').toLowerCase().includes(search.toLowerCase());
 
     if (!matchesSearch) return false;
-
-    if (timeFilter === 'all') return true;
-    
-    if (!job.created_at && !job.scheduled_date) return false;
-    const dateToCheck = parseISO(job.scheduled_date || job.created_at);
-
-    if (timeFilter === 'today') return isToday(dateToCheck);
-    if (timeFilter === 'week') return isThisWeek(dateToCheck);
-    if (timeFilter === 'month') return isThisMonth(dateToCheck);
-
-    return true;
+    return matchesTimeFilter(job.scheduled_date || job.created_at, timeFilter);
   });
 
   const exportCSV = () => {
@@ -323,12 +314,7 @@ export default function JobsPage() {
             <NeuSelect 
               value={timeFilter}
               onChange={(e) => setTimeFilter(e.target.value)}
-              options={[
-                { label: 'All Time', value: 'all' },
-                { label: 'Today', value: 'today' },
-                { label: 'This Week', value: 'week' },
-                { label: 'This Month', value: 'month' },
-              ]}
+              options={MONTH_FILTER_OPTIONS}
             />
           </div>
         </NeuCard>

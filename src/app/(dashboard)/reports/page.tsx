@@ -120,9 +120,9 @@ export default function ReportsPage() {
           { count: locCnt },
           { data: manualRpts }
         ] = await Promise.all([
-          supabase.from('attendance_records').select('*, profiles!attendance_records_user_id_fkey(full_name)').order('date', { ascending: false }).limit(100),
-          supabase.from('leave_requests').select('*, profiles(full_name)').order('created_at', { ascending: false }).limit(100),
-          supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(100),
+          supabase.from('attendance_records').select('*, profiles!attendance_records_user_id_fkey(full_name)').order('date', { ascending: false }),
+          supabase.from('leave_requests').select('*, profiles(full_name)').order('created_at', { ascending: false }),
+          supabase.from('audit_logs').select('*').order('created_at', { ascending: false }),
           supabase.from('exec_locations').select('id', { count: 'exact', head: true }),
           supabase.from('manual_reports').select('*').order('created_at', { ascending: false })
         ]);

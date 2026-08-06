@@ -12,7 +12,8 @@ import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { StatCard } from '@/components/neu/StatCard';
 import { ShoppingBag, Plus, Search, Download, DollarSign, FileText, CheckCircle2, Clock, Trash2 } from 'lucide-react';
-import { format, isAfter, subDays, subMonths } from 'date-fns';
+import { format } from 'date-fns';
+import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 import Papa from 'papaparse';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
@@ -124,14 +125,7 @@ export default function ProcurementPage() {
       (inv.notes || '').toLowerCase().includes(search.toLowerCase());
 
     const matchesStatus = statusFilter === 'all' || inv.status?.toLowerCase() === statusFilter.toLowerCase();
-
-    let matchesTime = true;
-    if (inv.created_at) {
-      const date = new Date(inv.created_at);
-      if (timeFilter === 'today') matchesTime = isAfter(date, subDays(new Date(), 1));
-      else if (timeFilter === 'week') matchesTime = isAfter(date, subDays(new Date(), 7));
-      else if (timeFilter === 'month') matchesTime = isAfter(date, subMonths(new Date(), 1));
-    }
+    const matchesTime = matchesTimeFilter(inv.created_at || inv.invoice_date, timeFilter);
 
     return matchesSearch && matchesStatus && matchesTime;
   });
@@ -275,16 +269,11 @@ export default function ProcurementPage() {
               ]}
             />
           </div>
-          <div className="w-full md:w-40">
+          <div className="w-full md:w-48">
             <NeuSelect 
               value={timeFilter}
               onChange={(e) => setTimeFilter(e.target.value)}
-              options={[
-                { label: 'All Time', value: 'all' },
-                { label: 'Today', value: 'today' },
-                { label: 'This Week', value: 'week' },
-                { label: 'This Month', value: 'month' },
-              ]}
+              options={MONTH_FILTER_OPTIONS}
             />
           </div>
           <NeuButton variant="secondary" onClick={exportCSV} className="shrink-0">

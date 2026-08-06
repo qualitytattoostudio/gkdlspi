@@ -13,7 +13,8 @@ import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { StatCard } from '@/components/neu/StatCard';
 import { Plus, Search, CheckCircle, AlertTriangle, Trash2, Truck, Download, ShieldAlert, Navigation } from 'lucide-react';
-import { format, isAfter, subDays, subMonths, isBefore, addDays } from 'date-fns';
+import { format, isBefore, addDays } from 'date-fns';
+import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 import Papa from 'papaparse';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
@@ -53,7 +54,7 @@ export default function FleetPage() {
 
         const [vehRes, alertRes] = await Promise.all([
           supabase.from('vehicles').select('*').order('created_at', { ascending: false }),
-          supabase.from('tracking_alerts').select('*, profiles!tracking_alerts_user_id_fkey(full_name)').order('created_at', { ascending: false }).limit(50)
+          supabase.from('tracking_alerts').select('*, profiles!tracking_alerts_user_id_fkey(full_name)').order('created_at', { ascending: false })
         ]);
 
         if (vehRes.error) throw vehRes.error;
@@ -182,16 +183,7 @@ export default function FleetPage() {
       (v.vehicle_type || '').toLowerCase().includes(search.toLowerCase()) ||
       (v.driver_name || '').toLowerCase().includes(search.toLowerCase());
 
-    let matchesTime = true;
-    if (timeFilter === 'today') {
-      matchesTime = isAfter(new Date(v.created_at), subDays(new Date(), 1));
-    } else if (timeFilter === 'week') {
-      matchesTime = isAfter(new Date(v.created_at), subDays(new Date(), 7));
-    } else if (timeFilter === 'month') {
-      matchesTime = isAfter(new Date(v.created_at), subMonths(new Date(), 1));
-    }
-
-    return matchesSearch && matchesTime;
+    return matchesSearch && matchesTimeFilter(v.created_at, timeFilter);
   });
 
   const exportCSV = () => {
@@ -323,10 +315,7 @@ export default function FleetPage() {
               <NeuSelect 
                 value={timeFilter}
                 onChange={(e) => setTimeFilter(e.target.value)}
-                options={[
-                  { label: 'All Time', value: 'all' },
-                  { label: 'Added This Month', value: 'month' },
-                ]}
+                options={MONTH_FILTER_OPTIONS}
               />
               <NeuButton variant="secondary" onClick={exportCSV} className="shrink-0">
                 <Download size={18} /> Export

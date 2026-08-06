@@ -13,7 +13,8 @@ import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { StatCard } from '@/components/neu/StatCard';
 import { Receipt, Plus, Search, CheckCircle, XCircle, Clock, IndianRupee, Trash2, Download, Filter } from 'lucide-react';
-import { format, isAfter, subDays, subMonths } from 'date-fns';
+import { format } from 'date-fns';
+import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 import Papa from 'papaparse';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
@@ -146,16 +147,7 @@ export default function ExpensesPage() {
       (e.submitted_by || '').toLowerCase().includes(search.toLowerCase()) ||
       (e.notes || '').toLowerCase().includes(search.toLowerCase());
 
-    let matchesTime = true;
-    if (timeFilter === 'today') {
-      matchesTime = isAfter(new Date(e.date), subDays(new Date(), 1));
-    } else if (timeFilter === 'week') {
-      matchesTime = isAfter(new Date(e.date), subDays(new Date(), 7));
-    } else if (timeFilter === 'month') {
-      matchesTime = isAfter(new Date(e.date), subMonths(new Date(), 1));
-    }
-
-    return matchesSearch && matchesTime;
+    return matchesSearch && matchesTimeFilter(e.date, timeFilter);
   });
 
   const exportCSV = () => {
@@ -281,12 +273,7 @@ export default function ExpensesPage() {
             <NeuSelect 
               value={timeFilter}
               onChange={(e) => setTimeFilter(e.target.value)}
-              options={[
-                { label: 'All Time', value: 'all' },
-                { label: 'Submitted Today', value: 'today' },
-                { label: 'Submitted This Week', value: 'week' },
-                { label: 'Submitted This Month', value: 'month' },
-              ]}
+              options={MONTH_FILTER_OPTIONS}
             />
           </div>
           <NeuButton variant="secondary" onClick={exportCSV} className="shrink-0">

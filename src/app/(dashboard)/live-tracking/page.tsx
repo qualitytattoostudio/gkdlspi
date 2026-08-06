@@ -40,15 +40,13 @@ export default function LiveTrackingPage() {
         const { data: visits } = await supabase
           .from('field_visits')
           .select('*')
-          .order('check_in_time', { ascending: false })
-          .limit(50);
+          .order('check_in_time', { ascending: false });
 
         // Fetch exec_locations ordered by newest first
         const { data: execs } = await supabase
           .from('exec_locations')
           .select('*')
-          .order('created_at', { ascending: false })
-          .limit(500);
+          .order('created_at', { ascending: false });
 
         setLocations((visits || []).map(v => ({
           ...v,
