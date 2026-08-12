@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   useReactTable,
   getCoreRowModel,
@@ -10,7 +10,6 @@ import {
 } from '@tanstack/react-table';
 import { NeuCard } from './NeuCard';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Layers } from 'lucide-react';
-import { NeuSelect } from './NeuSelect';
 
 interface NeuTableProps<T> {
   data: T[];
@@ -18,17 +17,19 @@ interface NeuTableProps<T> {
   onRowClick?: (row: T) => void;
   pageSizeOptions?: number[];
   enableLoadMore?: boolean;
+  defaultPageSize?: number;
 }
 
 export function NeuTable<T>({
   data,
   columns,
   onRowClick,
-  pageSizeOptions = [10, 25, 50, 100, 250],
+  pageSizeOptions = [25, 50, 100, 250, 500, 1000],
   enableLoadMore = true,
+  defaultPageSize = 1000, // Default to 1000 to display full logs immediately
 }: NeuTableProps<T>) {
-  const [pageSize, setPageSize] = useState<number>(25);
-  const [displayedItemsCount, setDisplayedItemsCount] = useState<number>(25);
+  const [pageSize, setPageSize] = useState<number>(defaultPageSize);
+  const [displayedItemsCount, setDisplayedItemsCount] = useState<number>(defaultPageSize);
   const [loadMoreMode, setLoadMoreMode] = useState<boolean>(false);
 
   const table = useReactTable({
@@ -38,15 +39,24 @@ export function NeuTable<T>({
     getPaginationRowModel: getPaginationRowModel(),
     initialState: {
       pagination: {
-        pageSize: pageSize,
+        pageSize: defaultPageSize,
       },
     },
   });
 
+  useEffect(() => {
+    // Dynamically expand page size if new data comes in
+    if (pageSize >= 500 && data.length > pageSize) {
+      table.setPageSize(data.length);
+    }
+  }, [data.length, pageSize, table]);
+
   const handlePageSizeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
     if (val === 'all') {
-      table.setPageSize(data.length || 1000);
+      const allCount = Math.max(data.length, 1000);
+      setPageSize(allCount);
+      table.setPageSize(allCount);
       setLoadMoreMode(false);
     } else {
       const num = Number(val);
@@ -58,10 +68,17 @@ export function NeuTable<T>({
   };
 
   const handleLoadMore = () => {
-    const nextCount = displayedItemsCount + 25;
+    const nextCount = displayedItemsCount + 50;
     setDisplayedItemsCount(nextCount);
     table.setPageSize(nextCount);
     setLoadMoreMode(true);
+  };
+
+  const handleShowAllFullLogs = () => {
+    const allCount = Math.max(data.length, 1000);
+    setPageSize(allCount);
+    table.setPageSize(allCount);
+    setLoadMoreMode(false);
   };
 
   const pageIndex = table.getState().pagination.pageIndex;
@@ -98,7 +115,7 @@ export function NeuTable<T>({
                 key={row.id}
                 onClick={() => onRowClick?.(row.original)}
                 className={`group transition-colors ${onRowClick ? 'cursor-pointer hover:bg-neu-bg hover:shadow-neu-inset-sm' : ''}`}
-                style={{ animation: `fadeUp 0.3s ease-out ${Math.min(i * 0.03, 0.5)}s both` }}
+                style={{ animation: `fadeUp 0.2s ease-out ${Math.min(i * 0.02, 0.4)}s both` }}
               >
                 {row.getVisibleCells().map((cell) => (
                   <td key={cell.id} className="px-6 py-4 text-sm text-neu-fg whitespace-nowrap">
@@ -111,10 +128,10 @@ export function NeuTable<T>({
         </table>
       </div>
       
-      {/* Table Pagination & Load More Footer */}
+      {/* Table Footer */}
       <div className="p-4 border-t border-neu-muted/20 flex flex-col sm:flex-row items-center justify-between gap-4 bg-neu-bg/30">
         <div className="flex items-center gap-3 text-xs text-neu-muted">
-          <span>Showing <strong className="text-neu-fg font-bold">{startRow}</strong> to <strong className="text-neu-fg font-bold">{endRow}</strong> of <strong className="text-neu-fg font-bold">{totalRows}</strong> entries</span>
+          <span>Showing <strong className="text-neu-fg font-bold">{startRow}</strong> to <strong className="text-neu-fg font-bold">{endRow}</strong> of <strong className="text-neu-fg font-bold">{totalRows}</strong> full logs</span>
           
           <div className="flex items-center gap-1.5 ml-2">
             <span className="hidden md:inline">Per page:</span>
@@ -126,20 +143,20 @@ export function NeuTable<T>({
               {pageSizeOptions.map(opt => (
                 <option key={opt} value={opt}>{opt}</option>
               ))}
-              <option value="all">Show All ({totalRows})</option>
+              <option value="all">Show All Logs ({totalRows})</option>
             </select>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Load More Button */}
-          {enableLoadMore && endRow < totalRows && (
+          {/* Show All Full Logs Button */}
+          {endRow < totalRows && (
             <button
-              onClick={handleLoadMore}
+              onClick={handleShowAllFullLogs}
               className="px-3.5 py-1.5 rounded-xl bg-neu-bg shadow-neu-small hover:shadow-neu-lifted active:shadow-neu-inset text-neu-accent font-bold text-xs flex items-center gap-1.5 transition-all mr-2"
             >
               <Layers size={14} />
-              Load More (+25)
+              Show All Logs ({totalRows})
             </button>
           )}
 
