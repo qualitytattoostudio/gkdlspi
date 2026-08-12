@@ -11,16 +11,20 @@ import { NeuSelect } from '@/components/neu/NeuSelect';
 import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { Search, Clock, Download, Plus, Filter } from 'lucide-react';
-import { format } from 'date-fns';
+import { StatCard } from '@/components/neu/StatCard';
+import { Search, Clock, Download, Plus, Filter, UserCheck, Calendar, CheckCircle2 } from 'lucide-react';
+import { format, parseISO } from 'date-fns';
 import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
+import { toast } from '@/store/toastStore';
+import { playSuccess, playError } from '@/lib/audio';
 
 export default function AttendancePage() {
   const supabase = createClient();
   const [attendance, setAttendance] = useState<any[]>([]);
+  const [profilesMap, setProfilesMap] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [timeFilter, setTimeFilter] = useState('all'); // all, today, week, month
+  const [timeFilter, setTimeFilter] = useState('all'); // all, today, week, month, '2026-08', etc.
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   // Form State
@@ -33,21 +37,32 @@ export default function AttendancePage() {
       setLoading(true);
 
       try {
-        let query = supabase
+        // Fetch all staff profiles first
+        const { data: profs } = await supabase.from('profiles').select('id, full_name, email, role');
+        const pMap = new Map<string, string>();
+        (profs || []).forEach(p => {
+          if (p.id) pMap.set(p.id, p.full_name || p.email || 'Staff Member');
+        });
+        setProfilesMap(pMap);
+
+        // Fetch all attendance records ordered newest first
+        const { data: attData, error } = await supabase
           .from('attendance_records')
-          .select(`
-            *,
-            profiles!attendance_records_user_id_fkey(full_name)
-          `)
+          .select('*')
           .order('date', { ascending: false });
 
-        const { data, error } = await query;
-        if (error) {
-          const { data: fallbackData } = await supabase.from('attendance_records').select('*').order('date', { ascending: false });
-          setAttendance(fallbackData || []);
-        } else {
-          setAttendance(data || []);
-        }
+        if (error) throw error;
+
+        const mapped = (attData || []).map(a => {
+          const resolvedName = pMap.get(a.user_id) || 'Staff Member';
+          return {
+            ...a,
+            employee_name: resolvedName,
+            profiles: { full_name: resolvedName }
+          };
+        });
+
+        setAttendance(mapped);
       } catch (err) {
         console.error('Error fetching attendance:', err);
         setAttendance([]);
@@ -65,33 +80,48 @@ export default function AttendancePage() {
       date: attDate,
       check_in_time: new Date().toISOString(),
       status,
+      employee_name: employeeName || 'Assigned Employee',
       profiles: { full_name: employeeName || 'Assigned Employee' },
     };
 
     try {
-      await supabase.from('attendance_records').insert([{
+      const { data, error } = await supabase.from('attendance_records').insert([{
         date: attDate,
         check_in_time: new Date().toISOString(),
         status,
-      }]);
-    } catch {}
+      }]).select('*');
 
-    setAttendance([newAtt, ...attendance]);
+      if (!error && data && data.length > 0) {
+        playSuccess();
+        toast.success('Attendance Recorded', 'Manual entry saved to database.');
+      }
+    } catch (err) {
+      console.error(err);
+      playError();
+    }
+
+    setAttendance(prev => [newAtt, ...prev]);
     setIsModalOpen(false);
     setEmployeeName('');
   };
 
   const filteredAttendance = attendance.filter(a => {
-    const matchesSearch = (a.profiles?.full_name || '').toLowerCase().includes(search.toLowerCase());
+    const nameToCheck = (a.employee_name || a.profiles?.full_name || '').toLowerCase();
+    const matchesSearch = nameToCheck.includes(search.toLowerCase());
     if (!matchesSearch) return false;
+    
     return matchesTimeFilter(a.date || a.check_in_time, timeFilter);
   });
 
   const exportCSV = () => {
+    if (filteredAttendance.length === 0) {
+      toast.warning('No Records', 'There are no attendance records to export.');
+      return;
+    }
     const csvContent = [
       ['Employee Name', 'Date', 'Check In', 'Check Out', 'Status'],
       ...filteredAttendance.map(a => [
-        a.profiles?.full_name || 'Employee',
+        a.employee_name || a.profiles?.full_name || 'Employee',
         a.date ? format(new Date(a.date), 'MMM dd, yyyy') : 'N/A',
         a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : 'N/A',
         a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
@@ -105,6 +135,8 @@ export default function AttendancePage() {
     link.setAttribute('href', url);
     link.setAttribute('download', `Attendance_Log_${timeFilter}_${new Date().toISOString().split('T')[0]}.csv`);
     link.click();
+    playSuccess();
+    toast.success('Export Successful', 'Attendance CSV downloaded.');
   };
 
   const getStatusBadge = (st: string) => {
@@ -118,24 +150,53 @@ export default function AttendancePage() {
 
   const columns = [
     {
-      accessorKey: 'profiles.full_name',
+      accessorKey: 'employee_name',
       header: 'Employee Name',
-      cell: (info: any) => <span className="font-bold text-neu-fg">{info.getValue() || 'Employee'}</span>
+      cell: (info: any) => (
+        <div className="flex items-center gap-2">
+          <UserCheck size={16} className="text-neu-accent shrink-0" />
+          <span className="font-bold text-neu-fg">{info.getValue() || 'Staff Member'}</span>
+        </div>
+      )
     },
     {
       accessorKey: 'date',
       header: 'Date',
-      cell: (info: any) => info.getValue() ? format(new Date(info.getValue()), 'MMM dd, yyyy') : 'N/A'
+      cell: (info: any) => {
+        const val = info.getValue();
+        if (!val) return 'N/A';
+        try {
+          return format(parseISO(val.length === 10 ? `${val}T00:00:00` : val), 'MMM dd, yyyy (EEE)');
+        } catch {
+          return val;
+        }
+      }
     },
     {
       accessorKey: 'check_in_time',
-      header: 'Check In',
-      cell: (info: any) => info.getValue() ? format(new Date(info.getValue()), 'hh:mm a') : 'N/A'
+      header: 'Check In Time',
+      cell: (info: any) => {
+        const val = info.getValue();
+        if (!val) return 'N/A';
+        try {
+          return format(new Date(val), 'hh:mm a');
+        } catch {
+          return val;
+        }
+      }
     },
     {
       accessorKey: 'check_out_time',
-      header: 'Check Out',
-      cell: (info: any) => info.getValue() ? format(new Date(info.getValue()), 'hh:mm a') : 'On Duty'
+      header: 'Check Out Time',
+      cell: (info: any) => {
+        const val = info.getValue();
+        if (!val) return <span className="text-neu-accent font-semibold text-xs">On Duty / Active</span>;
+        try {
+          return format(new Date(val), 'hh:mm a');
+        } catch {
+          return val;
+        }
+      }
     },
     {
       accessorKey: 'status',
@@ -148,17 +209,23 @@ export default function AttendancePage() {
     return (
       <div className="space-y-6">
         <h2 className="text-xl font-display font-bold text-neu-fg">Attendance Tracking</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {[1, 2, 3].map(i => <SkeletonCard key={i} className="h-28" />)}
+        </div>
         <SkeletonCard className="h-[400px]" />
       </div>
     );
   }
+
+  const presentCount = filteredAttendance.filter(a => (a.status || 'present') === 'present').length;
+  const absentCount = filteredAttendance.filter(a => a.status === 'absent' || a.status === 'leave').length;
 
   return (
     <div className="space-y-6 animate-fade-up">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h2 className="text-xl font-display font-bold text-neu-fg">Attendance Tracking (V-Admin Synced)</h2>
-          <p className="text-neu-muted text-sm">Monitor staff check-ins and attendance logs ({filteredAttendance.length} records shown).</p>
+          <p className="text-neu-muted text-sm">Monitor staff check-ins and attendance logs ({filteredAttendance.length} records shown from {attendance.length} total database logs).</p>
         </div>
         <div className="flex gap-3">
           <NeuButton onClick={exportCSV} variant="secondary">
@@ -170,6 +237,13 @@ export default function AttendancePage() {
             Record Attendance
           </NeuButton>
         </div>
+      </div>
+
+      {/* KPI Metric Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+        <StatCard title="Total Matching Records" value={filteredAttendance.length} icon={Calendar} />
+        <StatCard title="Present / Duty Verified" value={presentCount} icon={CheckCircle2} />
+        <StatCard title="Absent / Leave Logs" value={absentCount} icon={Clock} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -199,7 +273,7 @@ export default function AttendancePage() {
           <EmptyState 
             icon={Clock} 
             title="No attendance records found" 
-            description="No attendance records in the database matching your search."
+            description="No attendance records in the database matching your search or month filter."
             action={
               <NeuButton variant="secondary" onClick={() => setIsModalOpen(true)}>
                 <Plus size={18} />
