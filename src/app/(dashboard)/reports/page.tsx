@@ -422,6 +422,16 @@ export default function ReportsPage() {
     }
   }, [supabase, selectedDate, selectedEmployeeId, weeklyStartDate, weeklyEmployeeId, executeDailyReportFilter, executeWeeklyReportFilter]);
 
+  // 1. Automatically fetch Daily Report whenever Date or Employee selection changes
+  useEffect(() => {
+    executeDailyReportFilter(selectedDate, selectedEmployeeId);
+  }, [selectedDate, selectedEmployeeId, executeDailyReportFilter]);
+
+  // 2. Automatically fetch Weekly Report whenever Week Start Date or Employee selection changes
+  useEffect(() => {
+    executeWeeklyReportFilter(weeklyStartDate, weeklyEmployeeId);
+  }, [weeklyStartDate, weeklyEmployeeId, executeWeeklyReportFilter]);
+
   useEffect(() => {
     fetchInitialData();
 
