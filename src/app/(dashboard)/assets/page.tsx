@@ -41,7 +41,7 @@ export default function AssetsPage() {
 
       try {
         // Fetch profiles map
-        const { data: profData } = await supabase.from('profiles').select('id, full_name, role');
+        const { data: profData } = await supabase.from('profiles').select('id, full_name, role').eq('is_active', true);
         setEmployees(profData || []);
         if (profData && profData.length > 0) setDriverId(profData[0].id);
 

@@ -11,7 +11,7 @@ import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { StatCard } from '@/components/neu/StatCard';
-import { Plus, Search, UserCheck, Users, ShieldCheck, Trash2, Download, Filter } from 'lucide-react';
+import { Plus, Search, UserCheck, Users, ShieldCheck, Trash2, Download, AlertTriangle } from 'lucide-react';
 import { format, isAfter, subDays, subMonths } from 'date-fns';
 import Papa from 'papaparse';
 import { toast } from '@/store/toastStore';
@@ -24,33 +24,47 @@ export default function TeamsPage() {
   const [search, setSearch] = useState('');
   const [timeFilter, setTimeFilter] = useState('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
 
   // Form State
   const [fullName, setFullName] = useState('');
-  const [role, setRole] = useState('cleaner');
+  const [role, setRole] = useState('field_executive');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
 
-  useEffect(() => {
-    async function fetchEmployees() {
-      setLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .order('full_name', { ascending: true });
+  const fetchEmployees = async () => {
+    setLoading(true);
+    try {
+      // Query ONLY active users (exclude deleted/inactive accounts)
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('is_active', true)
+        .order('full_name', { ascending: true });
 
-        if (error) throw error;
-        setEmployees((data || []).filter(e => e.is_active !== false));
-      } catch (err) {
-        console.error('Error fetching employees:', err);
-        setEmployees([]);
-      } finally {
-        setLoading(false);
-      }
+      if (error) throw error;
+      setEmployees(data || []);
+    } catch (err) {
+      console.error('Error fetching employees:', err);
+      setEmployees([]);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  useEffect(() => {
     fetchEmployees();
+
+    const profilesChannel = supabase
+      .channel('realtime_profiles_teams')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
+        fetchEmployees();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(profilesChannel);
+    };
   }, [supabase]);
 
   const handleAddStaff = async (e: React.FormEvent) => {
@@ -60,6 +74,7 @@ export default function TeamsPage() {
       role,
       phone: phone || null,
       email: email || null,
+      is_active: true,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -73,14 +88,14 @@ export default function TeamsPage() {
       if (!error && data) {
         setEmployees(prev => [...prev, data[0]].sort((a, b) => (a.full_name || '').localeCompare(b.full_name || '')));
         playSuccess();
-        toast.success('Staff Added', 'New staff member registered successfully.');
+        toast.success('Staff Registered', `${fullName} has been added to active team.`);
       } else {
         throw error;
       }
     } catch (err) {
       console.error('Error adding staff:', err);
       playError();
-      toast.error('Registration Failed', 'Could not add the staff member.');
+      toast.error('Registration Failed', 'Could not register staff member.');
     }
     
     setIsModalOpen(false);
@@ -89,44 +104,32 @@ export default function TeamsPage() {
     setEmail('');
   };
 
-  const handleDeleteStaff = async (id: string) => {
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+
     try {
+      // Soft-delete: mark is_active = false so historical attendance records remain intact while user is removed from portal
       const { error } = await supabase
         .from('profiles')
-        .delete()
-        .eq('id', id);
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq('id', deleteTarget.id);
 
-      if (error) {
-        // If it fails due to foreign key constraints, fallback to soft delete
-        if (error.code === '23503' || error.message?.includes('foreign key')) {
-          const { error: softError } = await supabase
-            .from('profiles')
-            .update({ is_active: false, enabled: false })
-            .eq('id', id);
-            
-          if (softError) throw softError;
-          
-          setEmployees(prev => prev.filter(e => e.id !== id));
-          playSuccess();
-          toast.success('Staff Deactivated', 'Staff has history records, so their profile was deactivated instead of deleted.');
-          setDeleteId(null);
-          return;
-        }
-        throw error;
-      }
+      if (error) throw error;
 
-      setEmployees(prev => prev.filter(e => e.id !== id));
+      setEmployees(prev => prev.filter(e => e.id !== deleteTarget.id));
       playSuccess();
-      toast.success('Staff Removed', 'The staff profile has been deleted.');
+      toast.success('Staff Removed', `${deleteTarget.full_name} has been removed from active staff.`);
+      setDeleteTarget(null);
     } catch (err) {
-      console.error('Error deleting staff:', err);
+      console.error('Error removing staff:', err);
       playError();
-      toast.error('Deletion Failed', 'Could not remove the staff member.');
+      toast.error('Deletion Failed', 'Could not remove staff member.');
     }
-    setDeleteId(null);
   };
 
   const filteredEmployees = employees.filter(e => {
+    if (e.is_active === false) return false;
+
     const matchesSearch = 
       (e.full_name || '').toLowerCase().includes(search.toLowerCase()) ||
       (e.phone || '').includes(search) ||
@@ -153,71 +156,76 @@ export default function TeamsPage() {
     const csvData = filteredEmployees.map(e => ({
       'Full Name': e.full_name,
       'Role': e.role,
-      'Phone': e.phone,
-      'Email': e.email,
-      'Registered Date': e.created_at ? format(new Date(e.created_at), 'MMM dd, yyyy') : 'N/A'
+      'Email': e.email || 'N/A',
+      'Phone': e.phone || 'N/A',
+      'Status': 'Active',
+      'Created At': e.created_at ? format(new Date(e.created_at), 'yyyy-MM-dd HH:mm') : 'N/A'
     }));
     const csv = Papa.unparse(csvData);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `teams_report_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.setAttribute('download', `Active_Staff_Team_${format(new Date(), 'yyyy-MM-dd')}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     playSuccess();
-    toast.success('Export Successful', 'Your CSV file has been downloaded.');
+    toast.success('Export Successful', 'Active staff CSV downloaded.');
   };
 
   const columns = [
     {
       accessorKey: 'full_name',
       header: 'Full Name',
-      cell: (info: any) => <span className="font-bold text-neu-fg">{info.getValue() || 'Employee'}</span>
+      cell: (info: any) => (
+        <div className="flex items-center gap-2">
+          <UserCheck size={16} className="text-neu-accent shrink-0" />
+          <span className="font-bold text-neu-fg">{info.getValue() || 'Staff Member'}</span>
+        </div>
+      )
     },
     {
       accessorKey: 'role',
-      header: 'Role',
-      cell: (info: any) => <span className="capitalize font-semibold text-neu-accent">{info.getValue() || 'Staff'}</span>
-    },
-    {
-      accessorKey: 'phone',
-      header: 'Phone',
-      cell: (info: any) => info.getValue() || 'N/A'
+      header: 'Assigned Role',
+      cell: (info: any) => (
+        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-neu-accent/10 text-neu-accent">
+          {info.getValue() || 'Executive'}
+        </span>
+      )
     },
     {
       accessorKey: 'email',
-      header: 'Email',
-      cell: (info: any) => info.getValue() || 'N/A'
+      header: 'Email Address',
+      cell: (info: any) => <span className="text-neu-muted text-xs font-mono">{info.getValue() || 'N/A'}</span>
     },
     {
-      accessorKey: 'created_at',
-      header: 'Registered',
-      cell: (info: any) => info.getValue() ? format(new Date(info.getValue()), 'MMM dd, yyyy') : 'N/A'
+      accessorKey: 'phone',
+      header: 'Phone Number',
+      cell: (info: any) => <span className="text-neu-fg text-xs font-mono">{info.getValue() || 'N/A'}</span>
     },
     {
       id: 'actions',
       header: 'Actions',
-      cell: (info: any) => (
-        <button 
-          onClick={(e) => {
-            e.stopPropagation();
-            setDeleteId(info.row.original.id);
-          }}
-          className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-          title="Delete Staff"
-        >
-          <Trash2 size={18} />
-        </button>
-      )
-    },
+      cell: (info: any) => {
+        const item = info.row.original;
+        return (
+          <button 
+            onClick={() => setDeleteTarget(item)} 
+            className="p-1.5 rounded-lg bg-neu-bg shadow-neu-small hover:shadow-neu-lifted text-neu-muted hover:text-red-500 transition-all cursor-pointer" 
+            title={`Remove ${item.full_name}`}
+          >
+            <Trash2 size={14} />
+          </button>
+        );
+      }
+    }
   ];
 
   if (loading) {
     return (
       <div className="space-y-6">
-        <h2 className="text-xl font-display font-bold text-neu-fg">Team & Staff Directory</h2>
+        <h2 className="text-xl font-display font-bold text-neu-fg">Active Personnel Management</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {[1, 2, 3].map(i => <SkeletonCard key={i} className="h-32" />)}
         </div>
@@ -226,126 +234,146 @@ export default function TeamsPage() {
     );
   }
 
-  const supervisorsCount = employees.filter(e => e.role === 'supervisor' || e.role === 'manager' || e.role === 'gm').length;
-  const cleanersCount = employees.filter(e => e.role === 'cleaner' || e.role === 'worker' || e.role === 'staff').length;
-
   return (
     <div className="space-y-6 animate-fade-up">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-xl font-display font-bold text-neu-fg">Team & Staff Directory (V-Admin Synced)</h2>
-          <p className="text-neu-muted text-sm">Directly synchronized with system database ({employees.length} records).</p>
+          <h2 className="text-xl font-display font-bold text-neu-fg">Active Personnel & Staff Team</h2>
+          <p className="text-neu-muted text-sm">Managing active authorized staff accounts ({filteredEmployees.length} active members).</p>
         </div>
-        <NeuButton onClick={() => setIsModalOpen(true)}>
-          <Plus size={18} />
-          Add Staff
-        </NeuButton>
+        <div className="flex gap-3">
+          <NeuButton variant="secondary" onClick={exportCSV}>
+            <Download size={16} />
+            Export CSV
+          </NeuButton>
+          <NeuButton onClick={() => setIsModalOpen(true)}>
+            <Plus size={18} />
+            Register New Staff
+          </NeuButton>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-        <StatCard title="Total Registered Staff" value={employees.length} icon={Users} />
-        <StatCard title="Supervisors & Managers" value={supervisorsCount} icon={ShieldCheck} />
-        <StatCard title="Field Operations Staff" value={cleanersCount || (employees.length - supervisorsCount)} icon={UserCheck} />
+        <StatCard title="Active Team Members" value={filteredEmployees.length} icon={Users} />
+        <StatCard title="Field Operations" value={filteredEmployees.filter(e => e.role === 'field_executive' || e.role === 'cleaner').length} icon={UserCheck} />
+        <StatCard title="Supervisors & Admins" value={filteredEmployees.filter(e => e.role === 'admin' || e.role === 'manager' || e.role === 'supervisor').length} icon={ShieldCheck} />
       </div>
 
       <NeuCard className="p-4 flex flex-col md:flex-row gap-4 items-center justify-between">
         <div className="w-full md:max-w-md">
           <NeuInput 
-            placeholder="Search by name, role, phone, or email..." 
+            placeholder="Search active staff by name, email, role, or phone..." 
             icon={<Search size={18} />}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <div className="flex items-center gap-3 w-full md:w-auto">
-          <div className="w-full md:w-48">
-            <NeuSelect 
-              value={timeFilter}
-              onChange={(e) => setTimeFilter(e.target.value)}
-              options={[
-                { label: 'All Time', value: 'all' },
-                { label: 'Registered Today', value: 'today' },
-                { label: 'Registered This Week', value: 'week' },
-                { label: 'Registered This Month', value: 'month' },
-              ]}
-            />
-          </div>
-          <NeuButton variant="secondary" onClick={exportCSV} className="shrink-0">
-            <Download size={18} />
-            <span className="hidden sm:inline">Export</span>
-          </NeuButton>
+        <div className="w-full md:w-48">
+          <NeuSelect 
+            value={timeFilter}
+            onChange={(e) => setTimeFilter(e.target.value)}
+            options={[
+              { label: 'All Active Staff', value: 'all' },
+              { label: 'Registered Today', value: 'today' },
+              { label: 'Registered This Week', value: 'week' },
+              { label: 'Registered This Month', value: 'month' },
+            ]}
+          />
         </div>
       </NeuCard>
 
       {filteredEmployees.length === 0 ? (
         <NeuCard>
           <EmptyState 
-            icon={UserCheck} 
-            title="No staff profiles found" 
-            description="No profiles match your search in the system database."
+            icon={Users} 
+            title="No active staff members found" 
+            description="No active employees matching your filter."
+            action={
+              <NeuButton variant="secondary" onClick={() => setIsModalOpen(true)}>
+                <Plus size={18} />
+                Register New Staff
+              </NeuButton>
+            }
           />
         </NeuCard>
       ) : (
         <NeuTable data={filteredEmployees} columns={columns} />
       )}
 
-      {/* Add Staff Modal */}
-      <NeuModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Manually Add Staff Record">
+      {/* Register Staff Modal */}
+      <NeuModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Register Active Staff Member">
         <form onSubmit={handleAddStaff} className="space-y-4">
           <NeuInput 
             label="Full Name" 
-            placeholder="e.g. John Doe" 
+            placeholder="e.g. Anand Kumar" 
             value={fullName} 
             onChange={(e) => setFullName(e.target.value)} 
+            required 
           />
+
           <NeuSelect 
-            label="Role / Designation" 
+            label="Staff Role" 
             options={[
-              { label: 'General Cleaner', value: 'cleaner' },
-              { label: 'Supervisor', value: 'supervisor' },
-              { label: 'Manager', value: 'manager' },
-              { label: 'Technician', value: 'worker' },
+              { label: 'Field Executive', value: 'field_executive' },
+              { label: 'Facility Supervisor', value: 'supervisor' },
+              { label: 'General Manager', value: 'manager' },
+              { label: 'Operations Admin', value: 'admin' },
+              { label: 'Support Executive', value: 'support' },
+              { label: 'Sales Executive', value: 'sales' },
             ]} 
             value={role}
             onChange={(e) => setRole(e.target.value)}
           />
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <NeuInput 
-              label="Phone Number (Optional)" 
-              placeholder="+91..." 
-              value={phone} 
-              onChange={(e) => setPhone(e.target.value)} 
-            />
-            <NeuInput 
-              label="Email Address (Optional)" 
-              type="email"
-              placeholder="name@example.com" 
-              value={email} 
-              onChange={(e) => setEmail(e.target.value)} 
-            />
-          </div>
+
+          <NeuInput 
+            label="Email Address" 
+            type="email"
+            placeholder="e.g. anand@vyess.com" 
+            value={email} 
+            onChange={(e) => setEmail(e.target.value)} 
+          />
+
+          <NeuInput 
+            label="Phone Number" 
+            type="tel"
+            placeholder="e.g. +91 9876543210" 
+            value={phone} 
+            onChange={(e) => setPhone(e.target.value)} 
+          />
+
           <div className="flex justify-end gap-3 pt-4">
             <NeuButton type="button" variant="secondary" onClick={() => setIsModalOpen(false)}>
               Cancel
             </NeuButton>
             <NeuButton type="submit">
-              Save Staff Profile
+              Register Staff Member
             </NeuButton>
           </div>
         </form>
       </NeuModal>
 
-      {/* Delete Confirmation Modal */}
-      <NeuModal isOpen={!!deleteId} onClose={() => setDeleteId(null)} title="Confirm Deletion">
+      {/* Double Confirmation Delete Modal */}
+      <NeuModal isOpen={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Confirm Staff Deactivation">
         <div className="space-y-4">
-          <p className="text-neu-fg">Are you sure you want to permanently delete this staff member? This action cannot be undone.</p>
-          <div className="flex justify-end gap-3 pt-4">
-            <NeuButton type="button" variant="secondary" onClick={() => setDeleteId(null)}>
+          <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-start gap-3">
+            <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={20} />
+            <div>
+              <p className="font-bold text-sm text-neu-fg">Remove Staff Member?</p>
+              <p className="text-xs text-neu-muted mt-1">
+                Are you sure you want to deactivate <strong className="text-neu-fg font-bold">{deleteTarget?.full_name}</strong> ({deleteTarget?.email || 'Staff'})? They will be immediately removed from all active lists, dropdowns, and portal views.
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <NeuButton variant="secondary" onClick={() => setDeleteTarget(null)}>
               Cancel
             </NeuButton>
-            <NeuButton onClick={() => { if (deleteId) handleDeleteStaff(deleteId); }}>
-              Yes, Delete
-            </NeuButton>
+            <button 
+              onClick={handleConfirmDelete}
+              className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 active:scale-95 text-white font-bold text-xs shadow-neu-raised transition-all cursor-pointer"
+            >
+              Confirm Deactivation
+            </button>
           </div>
         </div>
       </NeuModal>

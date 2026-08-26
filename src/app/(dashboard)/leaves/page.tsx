@@ -45,6 +45,7 @@ export default function LeavesPage() {
         const { data: profData } = await supabase
           .from('profiles')
           .select('id, full_name, role')
+          .eq('is_active', true)
           .order('full_name', { ascending: true });
 
         setEmployees(profData || []);

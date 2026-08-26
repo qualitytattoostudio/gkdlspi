@@ -39,7 +39,7 @@ export default function ExpensesPage() {
 
       try {
         // Fetch profiles map
-        const { data: profiles } = await supabase.from('profiles').select('id, full_name');
+        const { data: profiles } = await supabase.from('profiles').select('id, full_name').eq('is_active', true);
         const profileMap = new Map<string, string>();
         (profiles || []).forEach(p => {
           if (p.id) profileMap.set(p.id, p.full_name || 'Staff Member');

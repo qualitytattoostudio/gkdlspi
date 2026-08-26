@@ -45,6 +45,7 @@ export default function AttendancePage() {
       const { data: profs } = await supabase
         .from('profiles')
         .select('id, full_name, email, role')
+        .eq('is_active', true)
         .order('full_name', { ascending: true });
 
       setEmployees(profs || []);
@@ -113,6 +114,9 @@ export default function AttendancePage() {
         } else if (payload.eventType === 'DELETE') {
           setAttendance(prev => prev.filter(a => a.id !== payload.old.id));
         }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'work_notes' }, () => {
+        fetchAttendance();
       })
       .subscribe();
 

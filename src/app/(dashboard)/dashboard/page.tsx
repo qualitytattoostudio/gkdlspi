@@ -42,7 +42,8 @@ export default function DashboardPage() {
         // Profiles count
         const { count: profileCount } = await supabase
           .from('profiles')
-          .select('*', { count: 'exact', head: true });
+          .select('*', { count: 'exact', head: true })
+          .eq('is_active', true);
 
         // Attendance records today or total
         const { count: attCount } = await supabase

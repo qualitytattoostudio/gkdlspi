@@ -40,7 +40,7 @@ export default function RosteringPage() {
     async function fetchRostering() {
       setLoading(true);
       try {
-        const { data: sups } = await supabase.from('profiles').select('id, full_name');
+        const { data: sups } = await supabase.from('profiles').select('id, full_name').eq('is_active', true).order('full_name', { ascending: true });
         setSupervisors(sups || []);
 
         const { data, error } = await supabase

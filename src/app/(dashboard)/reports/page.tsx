@@ -241,6 +241,7 @@ export default function ReportsPage() {
       const { data: profs } = await supabase
         .from('profiles')
         .select('id, full_name, role')
+        .eq('is_active', true)
         .order('full_name', { ascending: true });
 
       setEmployees(profs || []);
@@ -311,6 +312,9 @@ export default function ReportsPage() {
         fetchInitialData();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'manual_reports' }, () => {
+        fetchInitialData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'work_notes' }, () => {
         fetchInitialData();
       })
       .subscribe();
