@@ -12,9 +12,12 @@ import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { StatCard } from '@/components/neu/StatCard';
-import { CalendarDays, Plus, Search, CheckCircle, XCircle, Clock, Trash2, Download, Filter } from 'lucide-react';
-import { format, isAfter, subDays, subMonths } from 'date-fns';
+import { CalendarDays, Plus, Search, CheckCircle, XCircle, Clock, Download, FileText, UserCheck } from 'lucide-react';
+import { format } from 'date-fns';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
+import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
 
@@ -54,7 +57,7 @@ export default function LeavesPage() {
           if (p.id) profileMap.set(p.id, p.full_name || 'Staff Member');
         });
 
-        // Fetch leave requests
+        // Fetch leave requests (View only, no deletions permitted)
         const { data, error } = await supabase
           .from('leave_requests')
           .select('*')
@@ -130,20 +133,6 @@ export default function LeavesPage() {
     }
   };
 
-  const handleDeleteLeave = async (id: string) => {
-    try {
-      const { error } = await supabase.from('leave_requests').delete().eq('id', id);
-      if (error) throw error;
-      setLeaves(prev => prev.filter(l => l.id !== id));
-      playSuccess();
-      toast.success('Record Deleted', 'Leave request removed.');
-    } catch (err) {
-      console.error('Leave delete error:', err);
-      playError();
-      toast.error('Deletion Failed', 'Could not delete the record.');
-    }
-  };
-
   const getStatusBadge = (st: string) => {
     let variant: BadgeVariant = 'neutral';
     if (st === 'approved') variant = 'success';
@@ -158,16 +147,7 @@ export default function LeavesPage() {
       (l.leave_type || '').toLowerCase().includes(search.toLowerCase()) ||
       (l.reason || '').toLowerCase().includes(search.toLowerCase());
 
-    let matchesTime = true;
-    if (timeFilter === 'today') {
-      matchesTime = isAfter(new Date(l.created_at), subDays(new Date(), 1));
-    } else if (timeFilter === 'week') {
-      matchesTime = isAfter(new Date(l.created_at), subDays(new Date(), 7));
-    } else if (timeFilter === 'month') {
-      matchesTime = isAfter(new Date(l.created_at), subMonths(new Date(), 1));
-    }
-
-    return matchesSearch && matchesTime;
+    return matchesSearch && matchesTimeFilter(l.created_at || l.start_date, timeFilter);
   });
 
   const exportCSV = () => {
@@ -194,7 +174,34 @@ export default function LeavesPage() {
     link.click();
     document.body.removeChild(link);
     playSuccess();
-    toast.success('Export Successful', 'Your CSV file has been downloaded.');
+    toast.success('Export Successful', 'Leave requests CSV downloaded.');
+  };
+
+  const exportPDF = () => {
+    if (filtered.length === 0) {
+      toast.warning('No Data', 'There is no data to export.');
+      return;
+    }
+    const doc = new jsPDF();
+    doc.text('V-Syncer Operations — Leave Applications Report', 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Total Records: ${filtered.length}`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Employee', 'Leave Type', 'Start Date', 'End Date', 'Reason', 'Status']],
+      body: filtered.map(l => [
+        l.employee_name || 'Staff',
+        l.leave_type || 'General',
+        l.start_date || 'N/A',
+        l.end_date || 'N/A',
+        l.reason || 'N/A',
+        (l.status || 'pending').toUpperCase()
+      ])
+    });
+    doc.save(`Leave_Applications_Report_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    playSuccess();
+    toast.success('PDF Downloaded', 'Leave applications PDF downloaded.');
   };
 
   const pendingCount = leaves.filter(l => l.status === 'pending').length;
@@ -204,7 +211,12 @@ export default function LeavesPage() {
     {
       accessorKey: 'employee_name',
       header: 'Employee Name',
-      cell: (info: any) => <span className="font-bold text-neu-fg">{info.getValue() || 'Staff Member'}</span>
+      cell: (info: any) => (
+        <div className="flex items-center gap-2">
+          <UserCheck size={16} className="text-neu-accent shrink-0" />
+          <span className="font-bold text-neu-fg">{info.getValue() || 'Staff Member'}</span>
+        </div>
+      )
     },
     {
       accessorKey: 'leave_type',
@@ -233,36 +245,31 @@ export default function LeavesPage() {
     },
     {
       id: 'actions',
-      header: 'Actions',
+      header: 'Review Actions',
       cell: (info: any) => {
         const item = info.row.original;
         return (
           <div className="flex items-center gap-2">
-            {item.status === 'pending' && (
+            {item.status === 'pending' ? (
               <>
                 <button 
                   onClick={() => handleStatusChange(item.id, 'approved')} 
-                  className="p-1 text-neu-accent-secondary hover:scale-110 transition-transform cursor-pointer" 
-                  title="Approve"
+                  className="p-1 text-emerald-600 hover:scale-110 transition-transform cursor-pointer" 
+                  title="Approve Leave"
                 >
                   <CheckCircle size={18} />
                 </button>
                 <button 
                   onClick={() => handleStatusChange(item.id, 'rejected')} 
                   className="p-1 text-red-500 hover:scale-110 transition-transform cursor-pointer" 
-                  title="Reject"
+                  title="Reject Leave"
                 >
                   <XCircle size={18} />
                 </button>
               </>
+            ) : (
+              <span className="text-[11px] font-bold text-neu-muted uppercase">Reviewed</span>
             )}
-            <button 
-              onClick={() => handleDeleteLeave(item.id)} 
-              className="p-1 text-neu-muted hover:text-red-500 hover:scale-110 transition-transform cursor-pointer ml-1" 
-              title="Delete Leave Request"
-            >
-              <Trash2 size={16} />
-            </button>
           </div>
         );
       }
@@ -285,13 +292,23 @@ export default function LeavesPage() {
     <div className="space-y-6 animate-fade-up">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-xl font-display font-bold text-neu-fg">Leave Applications (V-Admin Synced)</h2>
-          <p className="text-neu-muted text-sm">Directly synchronized with system database ({leaves.length} records).</p>
+          <h2 className="text-xl font-display font-bold text-neu-fg">Leave Applications (View & Review Only)</h2>
+          <p className="text-neu-muted text-sm">Review employee leave applications from system database ({leaves.length} records). Records are permanent audit logs.</p>
         </div>
-        <NeuButton onClick={() => setIsModalOpen(true)}>
-          <Plus size={18} />
-          Record Staff Leave Request
-        </NeuButton>
+        <div className="flex gap-2.5">
+          <NeuButton onClick={exportPDF} variant="secondary">
+            <FileText size={16} />
+            PDF Export
+          </NeuButton>
+          <NeuButton onClick={exportCSV} variant="secondary">
+            <Download size={16} />
+            CSV Export
+          </NeuButton>
+          <NeuButton onClick={() => setIsModalOpen(true)}>
+            <Plus size={18} />
+            Record Staff Leave
+          </NeuButton>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
@@ -314,18 +331,9 @@ export default function LeavesPage() {
             <NeuSelect 
               value={timeFilter}
               onChange={(e) => setTimeFilter(e.target.value)}
-              options={[
-                { label: 'All Time', value: 'all' },
-                { label: 'Applied Today', value: 'today' },
-                { label: 'Applied This Week', value: 'week' },
-                { label: 'Applied This Month', value: 'month' },
-              ]}
+              options={MONTH_FILTER_OPTIONS}
             />
           </div>
-          <NeuButton variant="secondary" onClick={exportCSV} className="shrink-0">
-            <Download size={18} />
-            <span className="hidden sm:inline">Export</span>
-          </NeuButton>
         </div>
       </NeuCard>
 

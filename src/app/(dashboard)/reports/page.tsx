@@ -8,7 +8,7 @@ import { NeuInput } from '@/components/neu/NeuInput';
 import { NeuSelect } from '@/components/neu/NeuSelect';
 import { StatCard } from '@/components/neu/StatCard';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send } from 'lucide-react';
+import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
@@ -249,7 +249,7 @@ export default function ReportsPage() {
     fetchInitialData();
   }, [supabase]);
 
-  // Generate Daily PDF Doc
+  // 1. Daily Report PDF & CSV
   const buildDailyReportPDF = () => {
     const doc = new jsPDF();
     const empName = selectedEmployeeId === 'all' 
@@ -280,6 +280,35 @@ export default function ReportsPage() {
     const doc = buildDailyReportPDF();
     const empName = selectedEmployeeId === 'all' ? 'All_Personnel' : 'Staff';
     doc.save(`Daily_EOD_Report_${selectedDate}_${empName}.pdf`);
+    playSuccess();
+    toast.success('PDF Exported', 'Daily report downloaded as PDF.');
+  };
+
+  const exportDailyReportCSV = () => {
+    const empName = selectedEmployeeId === 'all' 
+      ? 'All_Staff' 
+      : (employees.find(e => e.id === selectedEmployeeId)?.full_name || 'Staff').replace(/\s+/g, '_');
+
+    const csv = Papa.unparse(dailyEmployeeReport.map(r => ({
+      EmployeeName: r.profiles?.full_name || 'Staff Member',
+      Role: r.profiles?.role || 'Executive',
+      Date: r.date,
+      CheckInTime: r.check_in_time ? format(new Date(r.check_in_time), 'hh:mm:ss a') : 'N/A',
+      CheckOutTime: r.check_out_time ? format(new Date(r.check_out_time), 'hh:mm:ss a') : 'Active',
+      BreakTiming: r.break_summary || 'No Breaks',
+      BreakMinutes: r.total_break_mins || 0,
+      Status: r.status || 'present',
+      EODWorkNotes: r.eod_notes || 'Standard Shift'
+    })));
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Daily_EOD_Report_${selectedDate}_${empName}.csv`);
+    link.click();
+    playSuccess();
+    toast.success('CSV Exported', 'Daily report downloaded as CSV.');
   };
 
   const exportDailyReportWhatsApp = () => {
@@ -292,7 +321,7 @@ export default function ReportsPage() {
     transferReportToWhatsApp(whatsappNumber, `Daily EOD Report (${selectedDate})`, summaryLines, doc);
   };
 
-  // Generate Weekly PDF Doc
+  // 2. Weekly Report PDF & CSV
   const buildWeeklyReportPDF = () => {
     const doc = new jsPDF();
     const endDt = addDays(parseISO(weeklyStartDate), 6);
@@ -321,45 +350,8 @@ export default function ReportsPage() {
     const doc = buildWeeklyReportPDF();
     const endDt = addDays(parseISO(weeklyStartDate), 6);
     doc.save(`Weekly_Report_${weeklyStartDate}_to_${format(endDt, 'yyyy-MM-dd')}.pdf`);
-  };
-
-  const exportWeeklyReportWhatsApp = () => {
-    const doc = buildWeeklyReportPDF();
-    const endDt = addDays(parseISO(weeklyStartDate), 6);
-    const endDateStr = format(endDt, 'yyyy-MM-dd');
-
-    const summaryLines = [
-      `📅 *Weekly Range:* ${weeklyStartDate} to ${endDateStr}`,
-      `👥 *Total Active Staff:* ${weeklyEmployeeReport.length} members`,
-      `⏱️ *Total Work Hours:* ${weeklyEmployeeReport.reduce((sum, w) => sum + Number(w.total_work_hours || 0), 0).toFixed(1)} hrs`,
-      `📝 *Compiled EOD Notes:* Available in attached PDF`
-    ];
-    transferReportToWhatsApp(whatsappNumber, `Weekly Operations Report (${weeklyStartDate})`, summaryLines, doc);
-  };
-
-  const exportDailyReportCSV = () => {
-    const empName = selectedEmployeeId === 'all' 
-      ? 'All_Staff' 
-      : (employees.find(e => e.id === selectedEmployeeId)?.full_name || 'Staff').replace(/\s+/g, '_');
-
-    const csv = Papa.unparse(dailyEmployeeReport.map(r => ({
-      EmployeeName: r.profiles?.full_name || 'Staff Member',
-      Role: r.profiles?.role || 'Executive',
-      Date: r.date,
-      CheckInTime: r.check_in_time ? format(new Date(r.check_in_time), 'hh:mm:ss a') : 'N/A',
-      CheckOutTime: r.check_out_time ? format(new Date(r.check_out_time), 'hh:mm:ss a') : 'Active',
-      BreakTiming: r.break_summary || 'No Breaks',
-      BreakMinutes: r.total_break_mins || 0,
-      Status: r.status || 'present',
-      EODWorkNotes: r.eod_notes || 'Standard Shift'
-    })));
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `Daily_EOD_Report_${selectedDate}_${empName}.csv`);
-    link.click();
+    playSuccess();
+    toast.success('PDF Exported', 'Weekly report downloaded as PDF.');
   };
 
   const exportWeeklyReportCSV = () => {
@@ -381,9 +373,151 @@ export default function ReportsPage() {
     link.setAttribute('href', url);
     link.setAttribute('download', `Weekly_Report_${weeklyStartDate}_to_${endDateStr}.csv`);
     link.click();
+    playSuccess();
+    toast.success('CSV Exported', 'Weekly report downloaded as CSV.');
   };
 
-  // Manual Custom Report Handler
+  const exportWeeklyReportWhatsApp = () => {
+    const doc = buildWeeklyReportPDF();
+    const endDt = addDays(parseISO(weeklyStartDate), 6);
+    const endDateStr = format(endDt, 'yyyy-MM-dd');
+
+    const summaryLines = [
+      `📅 *Weekly Range:* ${weeklyStartDate} to ${endDateStr}`,
+      `👥 *Total Active Staff:* ${weeklyEmployeeReport.length} members`,
+      `⏱️ *Total Work Hours:* ${weeklyEmployeeReport.reduce((sum, w) => sum + Number(w.total_work_hours || 0), 0).toFixed(1)} hrs`,
+      `📝 *Compiled EOD Notes:* Available in attached PDF`
+    ];
+    transferReportToWhatsApp(whatsappNumber, `Weekly Operations Report (${weeklyStartDate})`, summaryLines, doc);
+  };
+
+  // 3. Attendance Log Report PDF & CSV
+  const exportAttendancePDF = () => {
+    const doc = new jsPDF();
+    doc.text('V-Syncer Operations — Attendance Logs Report', 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Records: ${attendanceData.length}`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Employee', 'Date', 'Check In', 'Check Out', 'Status']],
+      body: attendanceData.map(a => [
+        a.profiles?.full_name || 'Staff',
+        a.date || 'N/A',
+        a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : 'N/A',
+        a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
+        a.status || 'present'
+      ])
+    });
+    doc.save(`Attendance_Report_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    playSuccess();
+    toast.success('PDF Exported', 'Attendance report downloaded as PDF.');
+  };
+
+  const exportAttendanceCSV = () => {
+    const csv = Papa.unparse(attendanceData.map(a => ({
+      ID: a.id,
+      Employee: a.profiles?.full_name || 'Staff',
+      Date: a.date,
+      CheckIn: a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : 'N/A',
+      CheckOut: a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
+      Status: a.status || 'present'
+    })));
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Attendance_Report_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.click();
+    playSuccess();
+    toast.success('CSV Exported', 'Attendance report downloaded as CSV.');
+  };
+
+  // 4. Leave Requests Report PDF & CSV
+  const exportLeavesPDF = () => {
+    const doc = new jsPDF();
+    doc.text('V-Syncer Operations — Leave Applications Report', 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Records: ${leaveData.length}`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Employee', 'Leave Type', 'Start Date', 'End Date', 'Reason', 'Status']],
+      body: leaveData.map(l => [
+        l.profiles?.full_name || 'Staff',
+        l.leave_type || 'General',
+        l.start_date || 'N/A',
+        l.end_date || 'N/A',
+        l.reason || 'N/A',
+        (l.status || 'pending').toUpperCase()
+      ])
+    });
+    doc.save(`Leave_Applications_Report_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    playSuccess();
+    toast.success('PDF Exported', 'Leave report downloaded as PDF.');
+  };
+
+  const exportLeavesCSV = () => {
+    const csv = Papa.unparse(leaveData.map(l => ({
+      ID: l.id,
+      Employee: l.profiles?.full_name || 'Staff',
+      Type: l.leave_type,
+      StartDate: l.start_date,
+      EndDate: l.end_date,
+      Status: l.status,
+      Reason: l.reason
+    })));
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Leave_Report_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.click();
+    playSuccess();
+    toast.success('CSV Exported', 'Leave report downloaded as CSV.');
+  };
+
+  // 5. Audit Logs Report PDF & CSV
+  const exportAuditPDF = () => {
+    const doc = new jsPDF();
+    doc.text('V-Syncer Security & System Audit Logs Report', 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Total Entries: ${auditData.length}`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Timestamp', 'Action / Event', 'Table Name', 'Record ID']],
+      body: auditData.map(a => [
+        a.created_at ? format(new Date(a.created_at), 'yyyy-MM-dd HH:mm') : 'N/A',
+        a.action || a.event_type || 'System Event',
+        a.table_name || 'Global',
+        a.record_id || a.id || 'N/A'
+      ])
+    });
+    doc.save(`Audit_Logs_Report_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    playSuccess();
+    toast.success('PDF Exported', 'Audit logs downloaded as PDF.');
+  };
+
+  const exportAuditCSV = () => {
+    const csv = Papa.unparse(auditData.map(a => ({
+      ID: a.id,
+      Timestamp: a.created_at ? format(new Date(a.created_at), 'yyyy-MM-dd HH:mm:ss') : 'N/A',
+      Action: a.action || a.event_type || 'System Event',
+      Table: a.table_name || 'Global',
+      RecordId: a.record_id || 'N/A'
+    })));
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Audit_Logs_Report_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.click();
+    playSuccess();
+    toast.success('CSV Exported', 'Audit logs downloaded as CSV.');
+  };
+
+  // 6. Manual Custom Report Handlers
   const handleOpenCreateModal = () => {
     setEditingReportId(null);
     setManualReportTitle('');
@@ -472,6 +606,49 @@ export default function ReportsPage() {
     }
   };
 
+  const exportCustomManualPDF = (report: any) => {
+    const doc = new jsPDF();
+    doc.text(`V-Syncer Executive Report — ${report.title}`, 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Report Type: ${report.type} | Target Staff: ${report.staff_name} | Date: ${report.date}`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Attribute / Parameter', 'Details / Compliance Summary']],
+      body: [
+        ['Report Title', report.title],
+        ['Report Classification', report.type],
+        ['Assigned Staff Member', report.staff_name],
+        ['Report Date', report.date],
+        ['Executive Notes & Directives', report.notes || 'No special notes provided.'],
+        ['Generation Timestamp', new Date().toLocaleString()],
+        ['System Verification', 'Verified & Signed by V-Syncer Manager']
+      ]
+    });
+    doc.save(`Executive_Report_${report.title.replace(/\s+/g, '_')}.pdf`);
+    playSuccess();
+    toast.success('PDF Downloaded', 'Custom report downloaded as PDF.');
+  };
+
+  const exportCustomManualCSV = (report: any) => {
+    const csv = Papa.unparse([{
+      Title: report.title,
+      Classification: report.type,
+      StaffMember: report.staff_name,
+      Date: report.date,
+      Notes: report.notes || 'N/A',
+      GeneratedAt: new Date().toISOString()
+    }]);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Executive_Report_${report.title.replace(/\s+/g, '_')}.csv`);
+    link.click();
+    playSuccess();
+    toast.success('CSV Downloaded', 'Custom report downloaded as CSV.');
+  };
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -489,7 +666,7 @@ export default function ReportsPage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h2 className="text-xl font-display font-bold text-neu-fg">Executive Reports & Analytics</h2>
-          <p className="text-neu-muted text-sm">Generate and export real operational intelligence & EOD notes synced from attendance logs.</p>
+          <p className="text-neu-muted text-sm">Download all operational intelligence & EOD staff reports in both CSV and PDF formats.</p>
         </div>
 
         {/* Target WhatsApp Config Bar */}
@@ -537,7 +714,7 @@ export default function ReportsPage() {
               Send PDF to WhatsApp (+91 {whatsappNumber})
             </button>
             <NeuButton onClick={exportDailyReportPDF} disabled={dailyEmployeeReport.length === 0}>
-              <FileText size={16} /> PDF Daily EOD Report
+              <FileText size={16} /> PDF Export
             </NeuButton>
             <NeuButton onClick={exportDailyReportCSV} variant="secondary" disabled={dailyEmployeeReport.length === 0}>
               <Download size={16} /> CSV Export
@@ -646,7 +823,7 @@ export default function ReportsPage() {
               Send Weekly PDF to WhatsApp (+91 {whatsappNumber})
             </button>
             <NeuButton onClick={exportWeeklyReportPDF} disabled={weeklyEmployeeReport.length === 0}>
-              <FileText size={16} /> PDF Weekly Report
+              <FileText size={16} /> PDF Export
             </NeuButton>
             <NeuButton onClick={exportWeeklyReportCSV} variant="secondary" disabled={weeklyEmployeeReport.length === 0}>
               <Download size={16} /> CSV Export
@@ -728,13 +905,82 @@ export default function ReportsPage() {
         </div>
       </NeuCard>
 
-      {/* DASHBOARD 3: Manual Executive Report Generator */}
+      {/* DASHBOARD 3: General Reports Hub (Both PDF & CSV for All) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Attendance Export Card */}
+        <NeuCard className="p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-neu-bg shadow-neu-small rounded-xl text-neu-accent">
+              <Clock size={24} />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-neu-fg">Attendance Logs Report</h3>
+              <p className="text-xs text-neu-muted">{attendanceCount} records ready.</p>
+            </div>
+          </div>
+          <p className="text-sm text-neu-muted">Staff check-ins, check-outs, and shift status audit records.</p>
+          <div className="flex gap-2.5 pt-2">
+            <NeuButton onClick={exportAttendancePDF} className="flex-1">
+              <FileText size={16} /> PDF
+            </NeuButton>
+            <NeuButton onClick={exportAttendanceCSV} variant="secondary" className="flex-1">
+              <Download size={16} /> CSV
+            </NeuButton>
+          </div>
+        </NeuCard>
+
+        {/* Leave Requests Export Card */}
+        <NeuCard className="p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-neu-bg shadow-neu-small rounded-xl text-neu-accent">
+              <Users size={24} />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-neu-fg">Leave Requests Report</h3>
+              <p className="text-xs text-neu-muted">{leaveCount} applications logged.</p>
+            </div>
+          </div>
+          <p className="text-sm text-neu-muted">Employee leave applications, classifications, and manager approvals.</p>
+          <div className="flex gap-2.5 pt-2">
+            <NeuButton onClick={exportLeavesPDF} className="flex-1">
+              <FileText size={16} /> PDF
+            </NeuButton>
+            <NeuButton onClick={exportLeavesCSV} variant="secondary" className="flex-1">
+              <Download size={16} /> CSV
+            </NeuButton>
+          </div>
+        </NeuCard>
+
+        {/* Audit Logs Export Card */}
+        <NeuCard className="p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-neu-bg shadow-neu-small rounded-xl text-neu-accent">
+              <ShieldCheck size={24} />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-neu-fg">System Audit Logs</h3>
+              <p className="text-xs text-neu-muted">{auditLogCount} security records.</p>
+            </div>
+          </div>
+          <p className="text-sm text-neu-muted">Immutable system audit trail and user action transaction histories.</p>
+          <div className="flex gap-2.5 pt-2">
+            <NeuButton onClick={exportAuditPDF} className="flex-1">
+              <FileText size={16} /> PDF
+            </NeuButton>
+            <NeuButton onClick={exportAuditCSV} variant="secondary" className="flex-1">
+              <Download size={16} /> CSV
+            </NeuButton>
+          </div>
+        </NeuCard>
+      </div>
+
+      {/* DASHBOARD 4: Manual Executive Custom Reports */}
       <NeuCard className="p-6 space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-neu-muted/10">
           <div>
             <h3 className="font-display font-bold text-lg text-neu-fg flex items-center gap-2">
               <FileText size={20} className="text-neu-accent" />
-              Manual Executive Report Generator
+              Manual Executive Custom Reports
             </h3>
             <p className="text-xs text-neu-muted">Create customized operational reports manually with custom date range, staff targets, and notes.</p>
           </div>
@@ -769,8 +1015,11 @@ export default function ReportsPage() {
                     <NeuButton onClick={() => transferReportToWhatsApp(whatsappNumber, mr.title, [`Staff: ${mr.staff_name}`, `Date: ${mr.date}`, `Notes: ${mr.notes || 'N/A'}`])} variant="secondary" className="text-xs text-emerald-600 font-bold">
                       <Send size={14} /> WhatsApp
                     </NeuButton>
-                    <NeuButton onClick={() => buildDailyReportPDF().save(`${mr.title.replace(/\s+/g, '_')}.pdf`)} variant="secondary" className="text-xs">
-                      <Download size={14} /> PDF
+                    <NeuButton onClick={() => exportCustomManualPDF(mr)} variant="secondary" className="text-xs">
+                      <FileText size={14} /> PDF
+                    </NeuButton>
+                    <NeuButton onClick={() => exportCustomManualCSV(mr)} variant="secondary" className="text-xs">
+                      <Download size={14} /> CSV
                     </NeuButton>
                     <NeuButton onClick={() => handleOpenEditModal(mr)} variant="secondary" className="p-2.5">
                       <Edit size={14} className="text-neu-accent" />
