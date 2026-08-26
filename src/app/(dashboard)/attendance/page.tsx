@@ -12,7 +12,7 @@ import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { StatCard } from '@/components/neu/StatCard';
-import { Search, Clock, Download, Plus, Filter, UserCheck, Calendar, CheckCircle2 } from 'lucide-react';
+import { Search, Clock, Download, Plus, Filter, UserCheck, Calendar, CheckCircle2, FileText } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 import { toast } from '@/store/toastStore';
@@ -31,6 +31,7 @@ export default function AttendancePage() {
   const [employeeName, setEmployeeName] = useState('');
   const [status, setStatus] = useState('present');
   const [attDate, setAttDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [attNotes, setAttNotes] = useState('');
 
   useEffect(() => {
     async function fetchAttendance() {
@@ -58,7 +59,8 @@ export default function AttendancePage() {
           return {
             ...a,
             employee_name: resolvedName,
-            profiles: { full_name: resolvedName }
+            profiles: { full_name: resolvedName },
+            eod_notes: a.notes || a.checkout_notes || a.remarks || 'Standard Duty Log'
           };
         });
 
@@ -80,6 +82,8 @@ export default function AttendancePage() {
       date: attDate,
       check_in_time: new Date().toISOString(),
       status,
+      notes: attNotes,
+      eod_notes: attNotes || 'Manual EOD Entry',
       employee_name: employeeName || 'Assigned Employee',
       profiles: { full_name: employeeName || 'Assigned Employee' },
     };
@@ -89,11 +93,13 @@ export default function AttendancePage() {
         date: attDate,
         check_in_time: new Date().toISOString(),
         status,
+        notes: attNotes || null,
+        checkout_notes: attNotes || null
       }]).select('*');
 
       if (!error && data && data.length > 0) {
         playSuccess();
-        toast.success('Attendance Recorded', 'Manual entry saved to database.');
+        toast.success('Attendance Recorded', 'Manual entry & EOD notes saved to database.');
       }
     } catch (err) {
       console.error(err);
@@ -103,11 +109,13 @@ export default function AttendancePage() {
     setAttendance(prev => [newAtt, ...prev]);
     setIsModalOpen(false);
     setEmployeeName('');
+    setAttNotes('');
   };
 
   const filteredAttendance = attendance.filter(a => {
     const nameToCheck = (a.employee_name || a.profiles?.full_name || '').toLowerCase();
-    const matchesSearch = nameToCheck.includes(search.toLowerCase());
+    const notesToCheck = (a.eod_notes || a.notes || '').toLowerCase();
+    const matchesSearch = nameToCheck.includes(search.toLowerCase()) || notesToCheck.includes(search.toLowerCase());
     if (!matchesSearch) return false;
     
     return matchesTimeFilter(a.date || a.check_in_time, timeFilter);
@@ -119,13 +127,14 @@ export default function AttendancePage() {
       return;
     }
     const csvContent = [
-      ['Employee Name', 'Date', 'Check In', 'Check Out', 'Status'],
+      ['Employee Name', 'Date', 'Check In', 'Check Out', 'Status', 'EOD Work Notes'],
       ...filteredAttendance.map(a => [
         a.employee_name || a.profiles?.full_name || 'Employee',
         a.date ? format(new Date(a.date), 'MMM dd, yyyy') : 'N/A',
         a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : 'N/A',
         a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
-        a.status || 'present'
+        a.status || 'present',
+        `"${(a.eod_notes || '').replace(/"/g, '""')}"`
       ])
     ].map(e => e.join(",")).join("\n");
     
@@ -136,7 +145,7 @@ export default function AttendancePage() {
     link.setAttribute('download', `Attendance_Log_${timeFilter}_${new Date().toISOString().split('T')[0]}.csv`);
     link.click();
     playSuccess();
-    toast.success('Export Successful', 'Attendance CSV downloaded.');
+    toast.success('Export Successful', 'Attendance & EOD Notes CSV downloaded.');
   };
 
   const getStatusBadge = (st: string) => {
@@ -203,6 +212,18 @@ export default function AttendancePage() {
       header: 'Status',
       cell: (info: any) => getStatusBadge(info.getValue())
     },
+    {
+      accessorKey: 'eod_notes',
+      header: 'EOD Remarks / Work Notes',
+      cell: (info: any) => (
+        <div className="flex items-center gap-1.5 max-w-xs">
+          <FileText size={14} className="text-neu-muted shrink-0" />
+          <span className="text-xs text-neu-fg truncate font-medium" title={info.getValue() || 'No notes'}>
+            {info.getValue() || 'Standard Duty Log'}
+          </span>
+        </div>
+      )
+    },
   ];
 
   if (loading) {
@@ -225,7 +246,7 @@ export default function AttendancePage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h2 className="text-xl font-display font-bold text-neu-fg">Attendance Tracking (V-Admin Synced)</h2>
-          <p className="text-neu-muted text-sm">Monitor staff check-ins and attendance logs ({filteredAttendance.length} records shown from {attendance.length} total database logs).</p>
+          <p className="text-neu-muted text-sm">Monitor staff check-ins, attendance logs, and EOD work notes ({filteredAttendance.length} records shown from {attendance.length} total database logs).</p>
         </div>
         <div className="flex gap-3">
           <NeuButton onClick={exportCSV} variant="secondary">
@@ -250,7 +271,7 @@ export default function AttendancePage() {
         <NeuCard className="p-4 flex gap-4 items-center">
           <div className="w-full">
             <NeuInput 
-              placeholder="Search employee names..." 
+              placeholder="Search employee names or EOD work notes..." 
               icon={<Search size={18} />}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -311,12 +332,18 @@ export default function AttendancePage() {
             value={attDate} 
             onChange={(e) => setAttDate(e.target.value)} 
           />
+          <NeuInput 
+            label="EOD Work Remarks / Notes for Manager" 
+            placeholder="Enter shift summary or EOD work notes..." 
+            value={attNotes} 
+            onChange={(e) => setAttNotes(e.target.value)} 
+          />
           <div className="flex justify-end gap-3 pt-4">
             <NeuButton type="button" variant="secondary" onClick={() => setIsModalOpen(false)}>
               Cancel
             </NeuButton>
             <NeuButton type="submit">
-              Record Attendance
+              Record Attendance & EOD Notes
             </NeuButton>
           </div>
         </form>

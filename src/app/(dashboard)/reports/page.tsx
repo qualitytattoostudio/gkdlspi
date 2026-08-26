@@ -8,14 +8,13 @@ import { NeuInput } from '@/components/neu/NeuInput';
 import { NeuSelect } from '@/components/neu/NeuSelect';
 import { StatCard } from '@/components/neu/StatCard';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, Building2, ShieldCheck, RefreshCw, Plus, Trash2, Edit } from 'lucide-react';
+import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
-import { format } from 'date-fns';
+import { format, subDays, addDays, parseISO } from 'date-fns';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
-
 import { NeuModal } from '@/components/neu/NeuModal';
 
 export default function ReportsPage() {
@@ -33,14 +32,17 @@ export default function ReportsPage() {
   const [leaveData, setLeaveData] = useState<any[]>([]);
   const [auditData, setAuditData] = useState<any[]>([]);
 
-  // Filtering Controls for Daily Employee Report
+  // Filtering Controls for Daily Employee & EOD Report
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('all');
-  const [appliedDate, setAppliedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [appliedEmployeeId, setAppliedEmployeeId] = useState<string>('all');
-  
   const [dailyEmployeeReport, setDailyEmployeeReport] = useState<any[]>([]);
-  const [filterLoading, setFilterLoading] = useState(false);
+  const [dailyFilterLoading, setDailyFilterLoading] = useState(false);
+
+  // Filtering Controls for Weekly Operational Staff Report
+  const [weeklyStartDate, setWeeklyStartDate] = useState(format(subDays(new Date(), 6), 'yyyy-MM-dd'));
+  const [weeklyEmployeeId, setWeeklyEmployeeId] = useState<string>('all');
+  const [weeklyEmployeeReport, setWeeklyEmployeeReport] = useState<any[]>([]);
+  const [weeklyFilterLoading, setWeeklyFilterLoading] = useState(false);
 
   // Manual Report Modal State & Full CRUD State
   const [isManualReportModalOpen, setIsManualReportModalOpen] = useState(false);
@@ -52,9 +54,9 @@ export default function ReportsPage() {
   const [manualReportNotes, setManualReportNotes] = useState('');
   const [manualReports, setManualReports] = useState<any[]>([]);
 
-  // Manual Apply function triggered on button click
-  const executeReportFilter = async (dateToFetch: string, empIdToFetch: string) => {
-    setFilterLoading(true);
+  // Fetch Daily Report & EOD Notes
+  const executeDailyReportFilter = async (dateToFetch: string, empIdToFetch: string) => {
+    setDailyFilterLoading(true);
     try {
       let query = supabase
         .from('attendance_records')
@@ -69,7 +71,7 @@ export default function ReportsPage() {
 
       if (error) throw error;
 
-      // Map break timing details for each attendance log
+      // Map break timing & EOD notes for each attendance log
       const formatted = (data || []).map(r => {
         const breaks = r.break_records || [];
         let totalBreakMins = 0;
@@ -83,21 +85,90 @@ export default function ReportsPage() {
           breakSummary = `${bStart} - ${bEnd} (${totalBreakMins} mins)`;
         }
 
+        const eodNotes = r.notes || r.checkout_notes || r.remarks || 'Standard Shift Completed';
+
         return {
           ...r,
           break_summary: breakSummary,
-          total_break_mins: totalBreakMins
+          total_break_mins: totalBreakMins,
+          eod_notes: eodNotes
         };
       });
 
       setDailyEmployeeReport(formatted);
-      setAppliedDate(dateToFetch);
-      setAppliedEmployeeId(empIdToFetch);
     } catch (err) {
       console.error('Error fetching daily employee report:', err);
       setDailyEmployeeReport([]);
     } finally {
-      setFilterLoading(false);
+      setDailyFilterLoading(false);
+    }
+  };
+
+  // Fetch Weekly Operational Staff Report
+  const executeWeeklyReportFilter = async (startDateStr: string, empIdToFetch: string) => {
+    setWeeklyFilterLoading(true);
+    try {
+      const startDt = parseISO(startDateStr);
+      const endDt = addDays(startDt, 6);
+      const endDateStr = format(endDt, 'yyyy-MM-dd');
+
+      let query = supabase
+        .from('attendance_records')
+        .select('*, profiles!attendance_records_user_id_fkey(full_name, role), break_records(*)')
+        .gte('date', startDateStr)
+        .lte('date', endDateStr);
+
+      if (empIdToFetch !== 'all') {
+        query = query.eq('user_id', empIdToFetch);
+      }
+
+      const { data, error } = await query.order('date', { ascending: false });
+      if (error) throw error;
+
+      // Group records by Employee
+      const empGroupMap = new Map<string, any>();
+
+      (data || []).forEach(r => {
+        const userId = r.user_id || 'unknown';
+        const empName = r.profiles?.full_name || 'Staff Member';
+        const empRole = r.profiles?.role || 'Executive';
+        const eodNote = r.notes || r.checkout_notes || r.remarks || '';
+        const workMins = Number(r.total_work_minutes) || 0;
+
+        const breaks = r.break_records || [];
+        const breakMins = breaks.reduce((sum: number, b: any) => sum + (Number(b.break_duration) || Number(b.break_duration_minutes) || 0), 0);
+
+        if (!empGroupMap.has(userId)) {
+          empGroupMap.set(userId, {
+            user_id: userId,
+            employee_name: empName,
+            role: empRole,
+            days_present: 0,
+            total_work_mins: 0,
+            total_break_mins: 0,
+            eod_notes_list: []
+          });
+        }
+
+        const group = empGroupMap.get(userId);
+        if (r.status === 'present' || r.check_in_time) group.days_present += 1;
+        group.total_work_mins += workMins;
+        group.total_break_mins += breakMins;
+        if (eodNote) group.eod_notes_list.push(`${r.date}: ${eodNote}`);
+      });
+
+      const weeklyFormatted = Array.from(empGroupMap.values()).map(g => ({
+        ...g,
+        total_work_hours: (g.total_work_mins / 60).toFixed(1),
+        compiled_eod_notes: g.eod_notes_list.length > 0 ? g.eod_notes_list.join(' | ') : 'Regular Weekly Shift Logs'
+      }));
+
+      setWeeklyEmployeeReport(weeklyFormatted);
+    } catch (err) {
+      console.error('Error fetching weekly report:', err);
+      setWeeklyEmployeeReport([]);
+    } finally {
+      setWeeklyFilterLoading(false);
     }
   };
 
@@ -137,8 +208,9 @@ export default function ReportsPage() {
         setAuditLogCount(audCnt || (aud?.length || 0));
         setExecLocationsCount(locCnt || 0);
 
-        // Fetch initial report for today
-        executeReportFilter(format(new Date(), 'yyyy-MM-dd'), 'all');
+        // Fetch initial daily & weekly reports
+        executeDailyReportFilter(format(new Date(), 'yyyy-MM-dd'), 'all');
+        executeWeeklyReportFilter(format(subDays(new Date(), 6), 'yyyy-MM-dd'), 'all');
       } catch (err) {
         console.error('Error fetching report metrics:', err);
       } finally {
@@ -148,19 +220,20 @@ export default function ReportsPage() {
     fetchInitialData();
   }, [supabase]);
 
+  // Export PDF & CSV for Daily Report
   const exportDailyReportPDF = () => {
     const doc = new jsPDF();
     const empName = selectedEmployeeId === 'all' 
       ? 'All Personnel' 
       : employees.find(e => e.id === selectedEmployeeId)?.full_name || 'Specific Staff';
     
-    doc.text(`V-Syncer Daily Operations Report — ${selectedDate}`, 14, 15);
+    doc.text(`V-Syncer Daily Operations & EOD Report — ${selectedDate}`, 14, 15);
     doc.setFontSize(10);
     doc.text(`Staff Target: ${empName} | Filter Date: ${selectedDate}`, 14, 22);
 
     autoTable(doc, {
       startY: 28,
-      head: [['Employee Name', 'Role', 'Date', 'Check In', 'Check Out', 'Break Timing & Duration', 'Status']],
+      head: [['Employee Name', 'Role', 'Date', 'Check In', 'Check Out', 'Break Timing', 'EOD Remarks / Work Notes']],
       body: dailyEmployeeReport.map(r => [
         r.profiles?.full_name || 'Staff Member',
         r.profiles?.role || 'Executive',
@@ -168,10 +241,10 @@ export default function ReportsPage() {
         r.check_in_time ? format(new Date(r.check_in_time), 'hh:mm a') : 'Not Checked In',
         r.check_out_time ? format(new Date(r.check_out_time), 'hh:mm a') : 'Active Shift',
         r.break_summary || 'No Breaks',
-        r.status || 'present'
+        r.eod_notes || 'Standard Shift Completed'
       ])
     });
-    doc.save(`Daily_Report_${selectedDate}_${empName.replace(/\s+/g, '_')}.pdf`);
+    doc.save(`Daily_EOD_Report_${selectedDate}_${empName.replace(/\s+/g, '_')}.pdf`);
   };
 
   const exportDailyReportCSV = () => {
@@ -188,17 +261,64 @@ export default function ReportsPage() {
       BreakTiming: r.break_summary || 'No Breaks',
       BreakMinutes: r.total_break_mins || 0,
       Status: r.status || 'present',
-      TotalWorkMinutes: r.total_work_minutes || 0
+      EODWorkNotes: r.eod_notes || 'Standard Shift'
     })));
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Daily_Report_${selectedDate}_${empName}.csv`);
+    link.setAttribute('download', `Daily_EOD_Report_${selectedDate}_${empName}.csv`);
     link.click();
   };
 
+  // Export PDF & CSV for Weekly Report
+  const exportWeeklyReportPDF = () => {
+    const doc = new jsPDF();
+    const endDt = addDays(parseISO(weeklyStartDate), 6);
+    const endDateStr = format(endDt, 'yyyy-MM-dd');
+    
+    doc.text(`V-Syncer Weekly Operations Report (${weeklyStartDate} to ${endDateStr})`, 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Target Scope: All Staff | Period: 7 Days`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Employee Name', 'Role', 'Days Present', 'Total Hours', 'Break Mins', 'Weekly Compiled EOD Notes']],
+      body: weeklyEmployeeReport.map(w => [
+        w.employee_name,
+        w.role,
+        `${w.days_present} / 7 Days`,
+        `${w.total_work_hours} hrs`,
+        `${w.total_break_mins} mins`,
+        w.compiled_eod_notes
+      ])
+    });
+    doc.save(`Weekly_Report_${weeklyStartDate}_to_${endDateStr}.pdf`);
+  };
+
+  const exportWeeklyReportCSV = () => {
+    const endDt = addDays(parseISO(weeklyStartDate), 6);
+    const endDateStr = format(endDt, 'yyyy-MM-dd');
+
+    const csv = Papa.unparse(weeklyEmployeeReport.map(w => ({
+      EmployeeName: w.employee_name,
+      Role: w.role,
+      DaysPresent: w.days_present,
+      TotalWorkHours: w.total_work_hours,
+      TotalBreakMinutes: w.total_break_mins,
+      CompiledEODNotes: w.compiled_eod_notes
+    })));
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Weekly_Report_${weeklyStartDate}_to_${endDateStr}.csv`);
+    link.click();
+  };
+
+  // Manual Custom Report Handler
   const handleOpenCreateModal = () => {
     setEditingReportId(null);
     setManualReportTitle('');
@@ -250,7 +370,6 @@ export default function ReportsPage() {
 
     try {
       if (editingReportId) {
-        // UPDATE existing report
         const { data, error } = await supabase
           .from('manual_reports')
           .update({ ...reportData, updated_at: new Date().toISOString() })
@@ -264,7 +383,6 @@ export default function ReportsPage() {
         playSuccess();
         toast.success('Report Updated', 'Your changes have been saved.');
       } else {
-        // CREATE new report
         const { data, error } = await supabase
           .from('manual_reports')
           .insert(reportData)
@@ -311,57 +429,6 @@ export default function ReportsPage() {
     doc.save(`Executive_Report_${report.title.replace(/\s+/g, '_')}.pdf`);
   };
 
-  const exportAttendanceCSV = () => {
-    const csv = Papa.unparse(attendanceData.map(a => ({
-      ID: a.id,
-      Employee: a.profiles?.full_name || 'Staff',
-      Date: a.date,
-      CheckIn: a.check_in_time,
-      CheckOut: a.check_out_time || 'N/A',
-      Status: a.status
-    })));
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `Attendance_Report_${new Date().toISOString().split('T')[0]}.csv`);
-    link.click();
-  };
-
-  const exportAttendancePDF = () => {
-    const doc = new jsPDF();
-    doc.text('V-Syncer Operations — Attendance Report', 14, 15);
-    autoTable(doc, {
-      startY: 20,
-      head: [['Employee', 'Date', 'Check In', 'Status']],
-      body: attendanceData.map(a => [
-        a.profiles?.full_name || 'Staff',
-        a.date || 'N/A',
-        a.check_in_time ? new Date(a.check_in_time).toLocaleTimeString() : 'N/A',
-        a.status || 'present'
-      ])
-    });
-    doc.save(`Attendance_Report_${new Date().toISOString().split('T')[0]}.pdf`);
-  };
-
-  const exportLeavesCSV = () => {
-    const csv = Papa.unparse(leaveData.map(l => ({
-      ID: l.id,
-      Employee: l.profiles?.full_name || 'Staff',
-      Type: l.leave_type,
-      StartDate: l.start_date,
-      EndDate: l.end_date,
-      Status: l.status,
-      Reason: l.reason
-    })));
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `Leave_Report_${new Date().toISOString().split('T')[0]}.csv`);
-    link.click();
-  };
-
   if (loading) {
     return (
       <div className="space-y-6">
@@ -378,7 +445,7 @@ export default function ReportsPage() {
     <div className="space-y-6 animate-fade-up">
       <div>
         <h2 className="text-xl font-display font-bold text-neu-fg">Executive Reports & Analytics</h2>
-        <p className="text-neu-muted text-sm">Generate and export real operational intelligence synced from active database tables.</p>
+        <p className="text-neu-muted text-sm">Generate and export real operational intelligence & EOD notes synced from attendance logs.</p>
       </div>
 
       {/* Summary KPI Cards */}
@@ -389,19 +456,19 @@ export default function ReportsPage() {
         <StatCard title="GPS Location Traces" value={execLocationsCount} icon={BarChart} />
       </div>
 
-      {/* DASHBOARD 1: Daily Operational Staff Report */}
+      {/* DASHBOARD 1: Daily Operational Staff & EOD Report */}
       <NeuCard className="p-6 space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-neu-muted/10">
           <div>
             <h3 className="font-display font-bold text-lg text-neu-fg flex items-center gap-2">
               <Calendar size={20} className="text-neu-accent" />
-              Daily Operational Staff Report
+              Daily Operational Staff & EOD Manager Report
             </h3>
-            <p className="text-xs text-neu-muted">Filter report details by date and target specific employee profiles from database.</p>
+            <p className="text-xs text-neu-muted">Staff check-ins, check-outs, break timings, and EOD work notes submitted to manager.</p>
           </div>
           <div className="flex gap-3">
             <NeuButton onClick={exportDailyReportPDF} disabled={dailyEmployeeReport.length === 0}>
-              <FileText size={16} /> PDF Daily Report
+              <FileText size={16} /> PDF Daily EOD Report
             </NeuButton>
             <NeuButton onClick={exportDailyReportCSV} variant="secondary" disabled={dailyEmployeeReport.length === 0}>
               <Download size={16} /> CSV Export
@@ -428,12 +495,12 @@ export default function ReportsPage() {
           />
           <div>
             <NeuButton 
-              onClick={() => executeReportFilter(selectedDate, selectedEmployeeId)}
+              onClick={() => executeDailyReportFilter(selectedDate, selectedEmployeeId)}
               className="w-full"
-              disabled={filterLoading}
+              disabled={dailyFilterLoading}
             >
               <Filter size={16} />
-              {filterLoading ? 'Fetching...' : 'Apply Filters'}
+              {dailyFilterLoading ? 'Fetching...' : 'Apply Filters'}
             </NeuButton>
           </div>
           <div>
@@ -444,32 +511,43 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        {/* Daily Report Data Preview Table */}
+        {/* Daily Report Data Preview Stream */}
         <div className="space-y-3">
-          <h4 className="text-xs font-bold uppercase tracking-wider text-neu-muted">Report Preview ({selectedDate})</h4>
-          {filterLoading ? (
+          <h4 className="text-xs font-bold uppercase tracking-wider text-neu-muted">EOD Staff Reports Stream ({selectedDate})</h4>
+          {dailyFilterLoading ? (
             <SkeletonCard className="h-36" />
           ) : dailyEmployeeReport.length === 0 ? (
             <div className="p-8 text-center bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
               <UserCheck size={28} className="mx-auto text-neu-muted opacity-40" />
-              <p className="font-bold text-sm text-neu-fg">No attendance activity logged for this date</p>
+              <p className="font-bold text-sm text-neu-fg">No attendance or EOD activity logged for this date</p>
               <p className="text-xs text-neu-muted">Try selecting a different date or staff member filter.</p>
             </div>
           ) : (
-            <div className="space-y-2 max-h-60 overflow-y-auto scrollbar-hide">
+            <div className="space-y-3 max-h-72 overflow-y-auto scrollbar-hide">
               {dailyEmployeeReport.map((rep) => (
-                <div key={rep.id} className="p-3 bg-neu-bg shadow-neu-inset-sm rounded-xl flex justify-between items-center text-xs">
+                <div key={rep.id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-3 text-xs">
                   <div>
-                    <p className="font-bold text-neu-fg">{rep.profiles?.full_name || 'Staff Member'}</p>
-                    <p className="text-[11px] text-neu-muted">{rep.profiles?.role || 'Executive'} — Date: {rep.date}</p>
-                    <p className="text-[10px] text-neu-accent font-medium mt-0.5">Break Timing: {rep.break_summary || 'No Breaks'}</p>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm text-neu-fg">{rep.profiles?.full_name || 'Staff Member'}</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-neu-accent/10 text-neu-accent">
+                        {rep.profiles?.role || 'Executive'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-neu-muted mt-0.5">Date: {rep.date} | Breaks: {rep.break_summary}</p>
+                    <div className="mt-2 p-2.5 bg-neu-bg shadow-neu-inset-xs rounded-lg text-neu-fg font-medium text-xs max-w-2xl flex items-start gap-1.5">
+                      <FileText size={14} className="text-neu-accent shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold text-neu-accent text-[11px] uppercase tracking-wider block">EOD Work Notes to Manager:</span>
+                        <span>{rep.eod_notes}</span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <p className="font-bold text-neu-accent">
+                  <div className="text-right shrink-0">
+                    <p className="font-bold text-neu-accent text-sm">
                       In: {rep.check_in_time ? format(new Date(rep.check_in_time), 'hh:mm a') : 'N/A'}
                     </p>
-                    <p className="text-[11px] text-neu-muted">
-                      Out: {rep.check_out_time ? format(new Date(rep.check_out_time), 'hh:mm a') : 'Active'}
+                    <p className="text-xs text-neu-muted mt-0.5">
+                      Out: {rep.check_out_time ? format(new Date(rep.check_out_time), 'hh:mm a') : 'Active Shift'}
                     </p>
                   </div>
                 </div>
@@ -479,7 +557,101 @@ export default function ReportsPage() {
         </div>
       </NeuCard>
 
-      {/* DASHBOARD 2: Manual Report Builder & Generator */}
+      {/* DASHBOARD 2: Weekly Operational Staff Report */}
+      <NeuCard className="p-6 space-y-6">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-neu-muted/10">
+          <div>
+            <h3 className="font-display font-bold text-lg text-neu-fg flex items-center gap-2">
+              <CalendarRange size={20} className="text-neu-accent" />
+              Weekly Operational Staff Report & Analytics
+            </h3>
+            <p className="text-xs text-neu-muted">7-day aggregated attendance, total work hours, break totals, and compiled EOD work notes.</p>
+          </div>
+          <div className="flex gap-3">
+            <NeuButton onClick={exportWeeklyReportPDF} disabled={weeklyEmployeeReport.length === 0}>
+              <FileText size={16} /> PDF Weekly Report
+            </NeuButton>
+            <NeuButton onClick={exportWeeklyReportCSV} variant="secondary" disabled={weeklyEmployeeReport.length === 0}>
+              <Download size={16} /> CSV Export
+            </NeuButton>
+          </div>
+        </div>
+
+        {/* Weekly Filter Toolbar */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+          <NeuInput 
+            label="Week Start Date (7 Days)" 
+            type="date" 
+            value={weeklyStartDate}
+            onChange={(e) => setWeeklyStartDate(e.target.value)}
+          />
+          <NeuSelect 
+            label="Target Staff Scope" 
+            options={[
+              { label: 'All Personnel & Staff Members', value: 'all' },
+              ...employees.map(e => ({ label: `${e.full_name || 'Staff Member'} (${e.role || 'Staff'})`, value: e.id }))
+            ]}
+            value={weeklyEmployeeId}
+            onChange={(e) => setWeeklyEmployeeId(e.target.value)}
+          />
+          <div>
+            <NeuButton 
+              onClick={() => executeWeeklyReportFilter(weeklyStartDate, weeklyEmployeeId)}
+              className="w-full"
+              disabled={weeklyFilterLoading}
+            >
+              <Filter size={16} />
+              {weeklyFilterLoading ? 'Calculating...' : 'Generate Weekly Report'}
+            </NeuButton>
+          </div>
+          <div>
+            <div className="p-3 bg-neu-bg shadow-neu-inset-sm rounded-xl text-xs font-bold text-neu-fg w-full flex items-center justify-between">
+              <span className="text-neu-muted font-medium">Staff Members:</span>
+              <span className="text-neu-accent font-display text-sm">{weeklyEmployeeReport.length} Active</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Weekly Report Preview Table */}
+        <div className="space-y-3">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-neu-muted">Weekly Staff Summary Table</h4>
+          {weeklyFilterLoading ? (
+            <SkeletonCard className="h-36" />
+          ) : weeklyEmployeeReport.length === 0 ? (
+            <div className="p-8 text-center bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
+              <CalendarRange size={28} className="mx-auto text-neu-muted opacity-40" />
+              <p className="font-bold text-sm text-neu-fg">No weekly operational records found for this period</p>
+              <p className="text-xs text-neu-muted">Try selecting a different start date for the 7-day period.</p>
+            </div>
+          ) : (
+            <div className="space-y-3 max-h-72 overflow-y-auto scrollbar-hide">
+              {weeklyEmployeeReport.map((w) => (
+                <div key={w.user_id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
+                  <div className="flex justify-between items-center text-xs border-b border-neu-muted/10 pb-2">
+                    <div>
+                      <span className="font-bold text-sm text-neu-fg">{w.employee_name}</span>
+                      <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-neu-accent/10 text-neu-accent">
+                        {w.role}
+                      </span>
+                    </div>
+                    <div className="flex gap-4 font-bold text-xs">
+                      <span>Days Present: <strong className="text-emerald-600">{w.days_present} / 7</strong></span>
+                      <span>Total Work: <strong className="text-neu-accent">{w.total_work_hours} hrs</strong></span>
+                      <span>Total Breaks: <strong className="text-amber-600">{w.total_break_mins} mins</strong></span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-neu-muted font-medium bg-neu-bg shadow-neu-inset-xs p-2.5 rounded-lg">
+                    <strong className="text-neu-fg font-bold block text-[11px] mb-0.5">Compiled Weekly EOD Work Notes:</strong>
+                    {w.compiled_eod_notes}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </NeuCard>
+
+      {/* DASHBOARD 3: Manual Executive Report Generator */}
       <NeuCard className="p-6 space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-neu-muted/10">
           <div>
@@ -533,50 +705,6 @@ export default function ReportsPage() {
           )}
         </div>
       </NeuCard>
-
-      {/* General Report Export Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Attendance Export Card */}
-        <NeuCard className="p-6 space-y-4">
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-neu-bg shadow-neu-small rounded-xl text-neu-accent">
-              <Clock size={24} />
-            </div>
-            <div>
-              <h3 className="font-display font-bold text-neu-fg">Attendance Log Report</h3>
-              <p className="text-xs text-neu-muted">{attendanceCount} records ready for export.</p>
-            </div>
-          </div>
-          <p className="text-sm text-neu-muted">Comprehensive summary of staff check-in times, dates, and attendance statuses.</p>
-          <div className="flex gap-3 pt-2">
-            <NeuButton onClick={exportAttendancePDF} className="flex-1">
-              <FileText size={16} /> PDF Export
-            </NeuButton>
-            <NeuButton onClick={exportAttendanceCSV} variant="secondary" className="flex-1">
-              <Download size={16} /> CSV Export
-            </NeuButton>
-          </div>
-        </NeuCard>
-
-        {/* Leave Export Card */}
-        <NeuCard className="p-6 space-y-4">
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-neu-bg shadow-neu-small rounded-xl text-neu-accent">
-              <Users size={24} />
-            </div>
-            <div>
-              <h3 className="font-display font-bold text-neu-fg">Leave Requests Report</h3>
-              <p className="text-xs text-neu-muted">{leaveCount} applications logged.</p>
-            </div>
-          </div>
-          <p className="text-sm text-neu-muted">Detailed report of employee leaves, type classifications, and manager approvals.</p>
-          <div className="flex gap-3 pt-2">
-            <NeuButton onClick={exportLeavesCSV} variant="secondary" className="w-full">
-              <Download size={16} /> CSV Export
-            </NeuButton>
-          </div>
-        </NeuCard>
-      </div>
 
       {/* Create / Edit Manual Report Modal */}
       <NeuModal 
