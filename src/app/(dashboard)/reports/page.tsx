@@ -57,8 +57,9 @@ export default function ReportsPage() {
   const [manualReportNotes, setManualReportNotes] = useState('');
   const [manualReports, setManualReports] = useState<any[]>([]);
 
-  // Helper function to transfer report via WhatsApp
+  // Direct Auto-Dispatch to WhatsApp without confirmation dialog
   const transferReportToWhatsApp = (targetPhone: string, title: string, summaryLines: string[], doc?: any) => {
+    // 1. Auto-save PDF directly to disk
     if (doc) {
       doc.save(`${title.replace(/\s+/g, '_')}.pdf`);
     }
@@ -74,13 +75,22 @@ export default function ReportsPage() {
       ...summaryLines,
       `-----------------------------------------`,
       `✅ *Verified by V-Syncer Manager Portal*`,
-      `📎 *PDF Report Downloaded & Ready to Attach!*`
+      `📎 *PDF Report Attached / Downloaded to Device*`
     ].join('\n');
 
-    const waUrl = `https://api.whatsapp.com/send?phone=${phoneWithCountry}&text=${encodeURIComponent(text)}`;
-    window.open(waUrl, '_blank');
+    // 2. Open WhatsApp Web or Native App directly
+    const isMobile = typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const waUrl = isMobile 
+      ? `whatsapp://send?phone=${phoneWithCountry}&text=${encodeURIComponent(text)}`
+      : `https://web.whatsapp.com/send?phone=${phoneWithCountry}&text=${encodeURIComponent(text)}`;
+
+    const win = window.open(waUrl, '_blank');
+    if (!win || isMobile) {
+      window.location.href = `https://api.whatsapp.com/send?phone=${phoneWithCountry}&text=${encodeURIComponent(text)}`;
+    }
+    
     playSuccess();
-    toast.success('WhatsApp Dispatch Triggered', `PDF downloaded. Opening WhatsApp for +91 ${targetPhone}...`);
+    toast.success('Dispatched to WhatsApp', `Report transferred directly to +91 ${cleanNum}.`);
   };
 
   // Fetch Daily Report & EOD Notes
