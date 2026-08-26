@@ -11,8 +11,13 @@ import { NeuBadge, BadgeVariant } from '@/components/neu/NeuBadge';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { StatCard } from '@/components/neu/StatCard';
-import { Target, Award, CheckCircle, Plus, TrendingUp, Users, Calendar, Trash2, Flag, CheckSquare } from 'lucide-react';
+import { Target, Award, CheckCircle, Plus, TrendingUp, Users, Calendar, Trash2, Flag, CheckSquare, Download, FileText } from 'lucide-react';
 import { format } from 'date-fns';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import Papa from 'papaparse';
+import { toast } from '@/store/toastStore';
+import { playSuccess, playError } from '@/lib/audio';
 
 export default function TargetsPage() {
   const supabase = createClient();
@@ -160,6 +165,8 @@ export default function TargetsPage() {
           employee_name: empName,
           assigned_by_name: 'Manager'
         }, ...prev]);
+        playSuccess();
+        toast.success('Goal Allocated', 'Target assigned to staff member.');
       } else {
         setGoals(prev => [{
           id: `G-${Date.now()}`,
@@ -170,6 +177,7 @@ export default function TargetsPage() {
       }
     } catch (err) {
       console.error('Goal allocation error:', err);
+      playError();
     }
 
     setIsModalOpen(false);
@@ -202,6 +210,8 @@ export default function TargetsPage() {
           ...prev,
           [goalId]: [...(prev[goalId] || []), data[0]]
         }));
+        playSuccess();
+        toast.success('Milestone Saved', 'Milestone added to target.');
       } else {
         setMilestonesMap(prev => ({
           ...prev,
@@ -210,6 +220,7 @@ export default function TargetsPage() {
       }
     } catch (err) {
       console.error('Milestone add error:', err);
+      playError();
     }
 
     setIsMilestoneModalOpen(false);
@@ -248,17 +259,14 @@ export default function TargetsPage() {
         return acc;
       }, 0);
 
-      // If milestones have target values, update goal's current_value
       const totalMilestonesCount = updatedMilestones.length;
       const completedMilestonesCount = updatedMilestones.filter(m => m.is_completed).length;
 
       let newCurrentValue = completedValue;
       if (completedValue === 0 && totalMilestonesCount > 0) {
-        // Fallback: calculate proportional percentage of target_value based on completed count
         newCurrentValue = Math.round((completedMilestonesCount / totalMilestonesCount) * Number(targetGoal.target_value));
       }
 
-      // Update Database employee_goals current_value
       try {
         await supabase
           .from('employee_goals')
@@ -272,7 +280,6 @@ export default function TargetsPage() {
         console.error('Goal current_value update error:', err);
       }
 
-      // Update local goals state
       setGoals(prev => prev.map(g => g.id === goalId ? { 
         ...g, 
         current_value: newCurrentValue,
@@ -284,8 +291,94 @@ export default function TargetsPage() {
   const handleDeleteGoal = async (id: string) => {
     try {
       await supabase.from('employee_goals').delete().eq('id', id);
-    } catch {}
-    setGoals(goals.filter(g => g.id !== id));
+      setGoals(goals.filter(g => g.id !== id));
+      playSuccess();
+      toast.success('Goal Removed', 'Target has been deleted.');
+    } catch {
+      playError();
+      toast.error('Deletion Failed', 'Could not delete target.');
+    }
+  };
+
+  const exportGoalsPDF = () => {
+    if (goals.length === 0) {
+      toast.warning('No Goals', 'There are no goals to export.');
+      return;
+    }
+    const doc = new jsPDF();
+    doc.text('V-Syncer Operations — Employee Target & Goals Report', 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Total Targets: ${goals.length}`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Employee', 'Goal Title', 'Metric Type', 'Target Value', 'Progress', 'Status', 'Due Date']],
+      body: goals.map(g => {
+        const milestones = milestonesMap[g.id] || [];
+        let cur = Number(g.current_value) || 0;
+        const tgt = Number(g.target_value) || 1;
+        if (milestones.length > 0) {
+          const completedVal = milestones.reduce((sum, m) => m.is_completed ? sum + (Number(m.target_value) || 0) : sum, 0);
+          if (completedVal > 0) cur = completedVal;
+        }
+        const pct = Math.min(Math.round((cur / tgt) * 100), 100);
+
+        return [
+          g.employee_name || 'Staff Member',
+          g.title || 'Goal',
+          g.goal_type || 'Target',
+          `${tgt}`,
+          `${cur} (${pct}%)`,
+          (g.status || 'active').toUpperCase(),
+          g.due_date ? format(new Date(g.due_date), 'yyyy-MM-dd') : 'No Deadline'
+        ];
+      })
+    });
+    doc.save(`Target_Performance_Report_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    playSuccess();
+    toast.success('PDF Downloaded', 'Target performance report downloaded as PDF.');
+  };
+
+  const exportGoalsCSV = () => {
+    if (goals.length === 0) {
+      toast.warning('No Goals', 'There are no goals to export.');
+      return;
+    }
+    const csvData = goals.map(g => {
+      const milestones = milestonesMap[g.id] || [];
+      let cur = Number(g.current_value) || 0;
+      const tgt = Number(g.target_value) || 1;
+      if (milestones.length > 0) {
+        const completedVal = milestones.reduce((sum, m) => m.is_completed ? sum + (Number(m.target_value) || 0) : sum, 0);
+        if (completedVal > 0) cur = completedVal;
+      }
+      const pct = Math.min(Math.round((cur / tgt) * 100), 100);
+
+      return {
+        Employee: g.employee_name,
+        GoalTitle: g.title,
+        Description: g.description || 'N/A',
+        MetricType: g.goal_type,
+        TargetValue: tgt,
+        CurrentValue: cur,
+        ProgressPercentage: `${pct}%`,
+        Status: g.status,
+        DueDate: g.due_date,
+        AssignedBy: g.assigned_by_name
+      };
+    });
+
+    const csv = Papa.unparse(csvData);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Target_Performance_Report_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    playSuccess();
+    toast.success('CSV Downloaded', 'Target performance report downloaded as CSV.');
   };
 
   if (loading) {
@@ -310,10 +403,20 @@ export default function TargetsPage() {
           <h2 className="text-xl font-display font-bold text-neu-fg">Goal Allocation & Target Management</h2>
           <p className="text-neu-muted text-sm">Directly synchronized with v-attendee `employee_goals` and `goal_milestones` tables ({goals.length} goals allocated).</p>
         </div>
-        <NeuButton onClick={() => setIsModalOpen(true)}>
-          <Plus size={18} />
-          Allocate Goal to Staff
-        </NeuButton>
+        <div className="flex gap-2.5">
+          <NeuButton onClick={exportGoalsPDF} variant="secondary">
+            <FileText size={16} />
+            PDF Report
+          </NeuButton>
+          <NeuButton onClick={exportGoalsCSV} variant="secondary">
+            <Download size={16} />
+            CSV Export
+          </NeuButton>
+          <NeuButton onClick={() => setIsModalOpen(true)}>
+            <Plus size={18} />
+            Allocate Goal to Staff
+          </NeuButton>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">

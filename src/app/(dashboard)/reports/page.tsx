@@ -8,7 +8,7 @@ import { NeuInput } from '@/components/neu/NeuInput';
 import { NeuSelect } from '@/components/neu/NeuSelect';
 import { StatCard } from '@/components/neu/StatCard';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck } from 'lucide-react';
+import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck, Target, NotebookTabs } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
@@ -30,24 +30,31 @@ export default function ReportsPage() {
   const [leaveCount, setLeaveCount] = useState(0);
   const [auditLogCount, setAuditLogCount] = useState(0);
   const [execLocationsCount, setExecLocationsCount] = useState(0);
+  const [goalsCount, setGoalsCount] = useState(0);
   
   const [attendanceData, setAttendanceData] = useState<any[]>([]);
   const [leaveData, setLeaveData] = useState<any[]>([]);
   const [auditData, setAuditData] = useState<any[]>([]);
+  const [goalsData, setGoalsData] = useState<any[]>([]);
 
-  // Filtering Controls for Daily Employee & EOD Report
+  // 1. Filtering Controls for Daily Employee & EOD Report
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('all');
   const [dailyEmployeeReport, setDailyEmployeeReport] = useState<any[]>([]);
   const [dailyFilterLoading, setDailyFilterLoading] = useState(false);
 
-  // Filtering Controls for Weekly Operational Staff Report
+  // 2. Filtering Controls for Weekly Operational Staff Report
   const [weeklyStartDate, setWeeklyStartDate] = useState(format(subDays(new Date(), 6), 'yyyy-MM-dd'));
   const [weeklyEmployeeId, setWeeklyEmployeeId] = useState<string>('all');
   const [weeklyEmployeeReport, setWeeklyEmployeeReport] = useState<any[]>([]);
+  const [weeklyDailyBreakdown, setWeeklyDailyBreakdown] = useState<any[]>([]); // For specific person day-by-day
   const [weeklyFilterLoading, setWeeklyFilterLoading] = useState(false);
 
-  // Manual Report Modal State & Full CRUD State
+  // 3. Work Notes & EOD Intelligence Report Filter
+  const [workNotesSearch, setWorkNotesSearch] = useState('');
+  const [workNotesStaffId, setWorkNotesStaffId] = useState('all');
+
+  // 4. Manual Report Modal State & Full CRUD State
   const [isManualReportModalOpen, setIsManualReportModalOpen] = useState(false);
   const [editingReportId, setEditingReportId] = useState<string | null>(null);
   const [manualReportTitle, setManualReportTitle] = useState('');
@@ -59,7 +66,6 @@ export default function ReportsPage() {
 
   // Direct Auto-Dispatch to WhatsApp without confirmation dialog
   const transferReportToWhatsApp = (targetPhone: string, title: string, summaryLines: string[], doc?: any) => {
-    // 1. Auto-save PDF directly to disk
     if (doc) {
       doc.save(`${title.replace(/\s+/g, '_')}.pdf`);
     }
@@ -78,7 +84,6 @@ export default function ReportsPage() {
       `📎 *PDF Report Attached / Downloaded to Device*`
     ].join('\n');
 
-    // 2. Open WhatsApp Web or Native App directly
     const isMobile = typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const waUrl = isMobile 
       ? `whatsapp://send?phone=${phoneWithCountry}&text=${encodeURIComponent(text)}`
@@ -107,10 +112,8 @@ export default function ReportsPage() {
       }
 
       const { data, error } = await query.order('check_in_time', { ascending: false });
-
       if (error) throw error;
 
-      // Map break timing & EOD notes for each attendance log
       const formatted = (data || []).map(r => {
         const breaks = r.break_records || [];
         let totalBreakMins = 0;
@@ -143,7 +146,7 @@ export default function ReportsPage() {
     }
   };
 
-  // Fetch Weekly Operational Staff Report
+  // Fetch Weekly Operational Staff Report & Specific Person Breakdown
   const executeWeeklyReportFilter = async (startDateStr: string, empIdToFetch: string) => {
     setWeeklyFilterLoading(true);
     try {
@@ -161,17 +164,18 @@ export default function ReportsPage() {
         query = query.eq('user_id', empIdToFetch);
       }
 
-      const { data, error } = await query.order('date', { ascending: false });
+      const { data, error } = await query.order('date', { ascending: true });
       if (error) throw error;
 
       // Group records by Employee
       const empGroupMap = new Map<string, any>();
+      const dailyBreakdownList: any[] = [];
 
       (data || []).forEach(r => {
         const userId = r.user_id || 'unknown';
         const empName = r.profiles?.full_name || 'Staff Member';
         const empRole = r.profiles?.role || 'Executive';
-        const eodNote = r.notes || r.checkout_notes || r.remarks || '';
+        const eodNote = r.notes || r.checkout_notes || r.remarks || 'Regular Duty Log';
         const workMins = Number(r.total_work_minutes) || 0;
 
         const breaks = r.break_records || [];
@@ -194,6 +198,21 @@ export default function ReportsPage() {
         group.total_work_mins += workMins;
         group.total_break_mins += breakMins;
         if (eodNote) group.eod_notes_list.push(`${r.date}: ${eodNote}`);
+
+        // Build individual day log
+        dailyBreakdownList.push({
+          id: r.id,
+          user_id: userId,
+          employee_name: empName,
+          date: r.date,
+          day_name: format(parseISO(r.date), 'EEEE'),
+          check_in_time: r.check_in_time,
+          check_out_time: r.check_out_time,
+          total_work_hours: (workMins / 60).toFixed(1),
+          break_mins: breakMins,
+          eod_notes: eodNote,
+          status: r.status || 'present'
+        });
       });
 
       const weeklyFormatted = Array.from(empGroupMap.values()).map(g => ({
@@ -203,9 +222,11 @@ export default function ReportsPage() {
       }));
 
       setWeeklyEmployeeReport(weeklyFormatted);
+      setWeeklyDailyBreakdown(dailyBreakdownList);
     } catch (err) {
       console.error('Error fetching weekly report:', err);
       setWeeklyEmployeeReport([]);
+      setWeeklyDailyBreakdown([]);
     } finally {
       setWeeklyFilterLoading(false);
     }
@@ -215,7 +236,6 @@ export default function ReportsPage() {
     async function fetchInitialData() {
       setLoading(true);
       try {
-        // Fetch employees list
         const { data: profs } = await supabase
           .from('profiles')
           .select('id, full_name, role')
@@ -228,26 +248,29 @@ export default function ReportsPage() {
           { data: lve, count: lveCnt },
           { data: aud, count: audCnt },
           { count: locCnt },
-          { data: manualRpts }
+          { data: manualRpts },
+          { data: goals, count: goalsCnt }
         ] = await Promise.all([
-          supabase.from('attendance_records').select('*, profiles!attendance_records_user_id_fkey(full_name)').order('date', { ascending: false }),
+          supabase.from('attendance_records').select('*, profiles!attendance_records_user_id_fkey(full_name, role)').order('date', { ascending: false }),
           supabase.from('leave_requests').select('*, profiles(full_name)').order('created_at', { ascending: false }),
           supabase.from('audit_logs').select('*').order('created_at', { ascending: false }),
           supabase.from('exec_locations').select('id', { count: 'exact', head: true }),
-          supabase.from('manual_reports').select('*').order('created_at', { ascending: false })
+          supabase.from('manual_reports').select('*').order('created_at', { ascending: false }),
+          supabase.from('employee_goals').select('*').order('created_at', { ascending: false })
         ]);
 
         setAttendanceData(att || []);
         setLeaveData(lve || []);
         setAuditData(aud || []);
         setManualReports(manualRpts || []);
+        setGoalsData(goals || []);
 
         setAttendanceCount(attCnt || (att?.length || 0));
         setLeaveCount(lveCnt || (lve?.length || 0));
         setAuditLogCount(audCnt || (aud?.length || 0));
         setExecLocationsCount(locCnt || 0);
+        setGoalsCount(goalsCnt || (goals?.length || 0));
 
-        // Fetch initial daily & weekly reports
         executeDailyReportFilter(format(new Date(), 'yyyy-MM-dd'), 'all');
         executeWeeklyReportFilter(format(subDays(new Date(), 6), 'yyyy-MM-dd'), 'all');
       } catch (err) {
@@ -331,35 +354,58 @@ export default function ReportsPage() {
     transferReportToWhatsApp(whatsappNumber, `Daily EOD Report (${selectedDate})`, summaryLines, doc);
   };
 
-  // 2. Weekly Report PDF & CSV
+  // 2. Weekly Report PDF & CSV (With Specific Person Day-by-Day Support)
   const buildWeeklyReportPDF = () => {
     const doc = new jsPDF();
     const endDt = addDays(parseISO(weeklyStartDate), 6);
     const endDateStr = format(endDt, 'yyyy-MM-dd');
+    const isSpecificPerson = weeklyEmployeeId !== 'all';
+    const targetPersonName = employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Specific Staff Member';
     
-    doc.text(`V-Syncer Weekly Operations Report (${weeklyStartDate} to ${endDateStr})`, 14, 15);
-    doc.setFontSize(10);
-    doc.text(`Target Scope: All Staff | Period: 7 Days`, 14, 22);
+    if (isSpecificPerson) {
+      doc.text(`V-Syncer Individual Weekly Timesheet & Notes — ${targetPersonName}`, 14, 15);
+      doc.setFontSize(10);
+      doc.text(`Employee: ${targetPersonName} | Range: ${weeklyStartDate} to ${endDateStr} (7 Days)`, 14, 22);
 
-    autoTable(doc, {
-      startY: 28,
-      head: [['Employee Name', 'Role', 'Days Present', 'Total Hours', 'Break Mins', 'Weekly Compiled EOD Notes']],
-      body: weeklyEmployeeReport.map(w => [
-        w.employee_name,
-        w.role,
-        `${w.days_present} / 7 Days`,
-        `${w.total_work_hours} hrs`,
-        `${w.total_break_mins} mins`,
-        w.compiled_eod_notes
-      ])
-    });
+      autoTable(doc, {
+        startY: 28,
+        head: [['Date', 'Day', 'Check In', 'Check Out', 'Hours', 'Break', 'Daily EOD Work Notes']],
+        body: weeklyDailyBreakdown.map(d => [
+          d.date,
+          d.day_name,
+          d.check_in_time ? format(new Date(d.check_in_time), 'hh:mm a') : 'N/A',
+          d.check_out_time ? format(new Date(d.check_out_time), 'hh:mm a') : 'On Duty',
+          `${d.total_work_hours} hrs`,
+          `${d.break_mins} mins`,
+          d.eod_notes
+        ])
+      });
+    } else {
+      doc.text(`V-Syncer Weekly Operations Summary (${weeklyStartDate} to ${endDateStr})`, 14, 15);
+      doc.setFontSize(10);
+      doc.text(`Target Scope: All Staff Members | Period: 7 Days`, 14, 22);
+
+      autoTable(doc, {
+        startY: 28,
+        head: [['Employee Name', 'Role', 'Days Present', 'Total Hours', 'Break Mins', 'Weekly Compiled EOD Notes']],
+        body: weeklyEmployeeReport.map(w => [
+          w.employee_name,
+          w.role,
+          `${w.days_present} / 7 Days`,
+          `${w.total_work_hours} hrs`,
+          `${w.total_break_mins} mins`,
+          w.compiled_eod_notes
+        ])
+      });
+    }
     return doc;
   };
 
   const exportWeeklyReportPDF = () => {
     const doc = buildWeeklyReportPDF();
     const endDt = addDays(parseISO(weeklyStartDate), 6);
-    doc.save(`Weekly_Report_${weeklyStartDate}_to_${format(endDt, 'yyyy-MM-dd')}.pdf`);
+    const targetName = weeklyEmployeeId === 'all' ? 'All_Staff' : (employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Staff').replace(/\s+/g, '_');
+    doc.save(`Weekly_Report_${weeklyStartDate}_to_${format(endDt, 'yyyy-MM-dd')}_${targetName}.pdf`);
     playSuccess();
     toast.success('PDF Exported', 'Weekly report downloaded as PDF.');
   };
@@ -367,21 +413,38 @@ export default function ReportsPage() {
   const exportWeeklyReportCSV = () => {
     const endDt = addDays(parseISO(weeklyStartDate), 6);
     const endDateStr = format(endDt, 'yyyy-MM-dd');
+    const isSpecificPerson = weeklyEmployeeId !== 'all';
+    const targetName = isSpecificPerson ? (employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Staff').replace(/\s+/g, '_') : 'All_Staff';
 
-    const csv = Papa.unparse(weeklyEmployeeReport.map(w => ({
-      EmployeeName: w.employee_name,
-      Role: w.role,
-      DaysPresent: w.days_present,
-      TotalWorkHours: w.total_work_hours,
-      TotalBreakMinutes: w.total_break_mins,
-      CompiledEODNotes: w.compiled_eod_notes
-    })));
+    let csv = '';
+    if (isSpecificPerson) {
+      csv = Papa.unparse(weeklyDailyBreakdown.map(d => ({
+        EmployeeName: d.employee_name,
+        Date: d.date,
+        DayOfWeek: d.day_name,
+        CheckIn: d.check_in_time ? format(new Date(d.check_in_time), 'hh:mm:ss a') : 'N/A',
+        CheckOut: d.check_out_time ? format(new Date(d.check_out_time), 'hh:mm:ss a') : 'Active',
+        WorkHours: d.total_work_hours,
+        BreakMinutes: d.break_mins,
+        EODWorkNotes: d.eod_notes,
+        Status: d.status
+      })));
+    } else {
+      csv = Papa.unparse(weeklyEmployeeReport.map(w => ({
+        EmployeeName: w.employee_name,
+        Role: w.role,
+        DaysPresent: w.days_present,
+        TotalWorkHours: w.total_work_hours,
+        TotalBreakMinutes: w.total_break_mins,
+        CompiledEODNotes: w.compiled_eod_notes
+      })));
+    }
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Weekly_Report_${weeklyStartDate}_to_${endDateStr}.csv`);
+    link.setAttribute('download', `Weekly_Report_${weeklyStartDate}_to_${endDateStr}_${targetName}.csv`);
     link.click();
     playSuccess();
     toast.success('CSV Exported', 'Weekly report downloaded as CSV.');
@@ -391,17 +454,112 @@ export default function ReportsPage() {
     const doc = buildWeeklyReportPDF();
     const endDt = addDays(parseISO(weeklyStartDate), 6);
     const endDateStr = format(endDt, 'yyyy-MM-dd');
+    const isSpecificPerson = weeklyEmployeeId !== 'all';
+    const targetName = isSpecificPerson ? (employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Staff') : 'All Staff';
 
     const summaryLines = [
       `📅 *Weekly Range:* ${weeklyStartDate} to ${endDateStr}`,
-      `👥 *Total Active Staff:* ${weeklyEmployeeReport.length} members`,
+      `👤 *Target Scope:* ${targetName}`,
       `⏱️ *Total Work Hours:* ${weeklyEmployeeReport.reduce((sum, w) => sum + Number(w.total_work_hours || 0), 0).toFixed(1)} hrs`,
-      `📝 *Compiled EOD Notes:* Available in attached PDF`
+      `📝 *Compiled EOD Notes:* Detailed day-by-day log attached in PDF`
     ];
-    transferReportToWhatsApp(whatsappNumber, `Weekly Operations Report (${weeklyStartDate})`, summaryLines, doc);
+    transferReportToWhatsApp(whatsappNumber, `Weekly Report - ${targetName}`, summaryLines, doc);
   };
 
-  // 3. Attendance Log Report PDF & CSV
+  // 3. Work Notes & EOD Intelligence Report (PDF & CSV)
+  const filteredWorkNotes = attendanceData.filter(a => {
+    const notesStr = (a.notes || a.checkout_notes || a.remarks || '').toLowerCase();
+    const staffName = (a.profiles?.full_name || '').toLowerCase();
+    const matchesSearch = notesStr.includes(workNotesSearch.toLowerCase()) || staffName.includes(workNotesSearch.toLowerCase());
+    const matchesStaff = workNotesStaffId === 'all' || a.user_id === workNotesStaffId;
+    return matchesSearch && matchesStaff && (a.notes || a.checkout_notes || a.remarks);
+  });
+
+  const exportWorkNotesPDF = () => {
+    const doc = new jsPDF();
+    doc.text('V-Syncer Operations — Staff Work Notes & EOD Activity Report', 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Matching Records: ${filteredWorkNotes.length}`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Employee', 'Date', 'Check Out Time', 'Work Notes / EOD Remarks to Manager']],
+      body: filteredWorkNotes.map(a => [
+        a.profiles?.full_name || 'Staff Member',
+        a.date || 'N/A',
+        a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
+        a.notes || a.checkout_notes || a.remarks || 'Standard Duty Completed'
+      ])
+    });
+    doc.save(`Staff_Work_Notes_Report_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    playSuccess();
+    toast.success('PDF Exported', 'Work notes report downloaded as PDF.');
+  };
+
+  const exportWorkNotesCSV = () => {
+    const csv = Papa.unparse(filteredWorkNotes.map(a => ({
+      EmployeeName: a.profiles?.full_name || 'Staff Member',
+      Date: a.date,
+      CheckIn: a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm:ss a') : 'N/A',
+      CheckOut: a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm:ss a') : 'Active',
+      WorkNotes: a.notes || a.checkout_notes || a.remarks || 'Standard Duty',
+      TotalWorkMinutes: a.total_work_minutes || 0
+    })));
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Staff_Work_Notes_Report_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.click();
+    playSuccess();
+    toast.success('CSV Exported', 'Work notes report downloaded as CSV.');
+  };
+
+  // 4. Employee Goals & Target Allocation Report (PDF & CSV)
+  const exportGoalsReportPDF = () => {
+    const doc = new jsPDF();
+    doc.text('V-Syncer Operations — Staff Goals & Target Allocation Report', 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Total Targets: ${goalsData.length}`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Title / Goal', 'Metric Type', 'Target Value', 'Current Value', 'Status', 'Due Date']],
+      body: goalsData.map(g => [
+        g.title || 'Goal',
+        g.goal_type || 'Target',
+        `${g.target_value || 0}`,
+        `${g.current_value || 0}`,
+        (g.status || 'active').toUpperCase(),
+        g.due_date ? format(new Date(g.due_date), 'yyyy-MM-dd') : 'No Deadline'
+      ])
+    });
+    doc.save(`Goals_Target_Report_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    playSuccess();
+    toast.success('PDF Exported', 'Target report downloaded as PDF.');
+  };
+
+  const exportGoalsReportCSV = () => {
+    const csv = Papa.unparse(goalsData.map(g => ({
+      Title: g.title,
+      GoalType: g.goal_type,
+      TargetValue: g.target_value,
+      CurrentValue: g.current_value,
+      Status: g.status,
+      DueDate: g.due_date,
+      Description: g.description || 'N/A'
+    })));
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Goals_Target_Report_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.click();
+    playSuccess();
+    toast.success('CSV Exported', 'Target report downloaded as CSV.');
+  };
+
+  // 5. Attendance Log Report PDF & CSV
   const exportAttendancePDF = () => {
     const doc = new jsPDF();
     doc.text('V-Syncer Operations — Attendance Logs Report', 14, 15);
@@ -443,7 +601,7 @@ export default function ReportsPage() {
     toast.success('CSV Exported', 'Attendance report downloaded as CSV.');
   };
 
-  // 4. Leave Requests Report PDF & CSV
+  // 6. Leave Requests Report PDF & CSV
   const exportLeavesPDF = () => {
     const doc = new jsPDF();
     doc.text('V-Syncer Operations — Leave Applications Report', 14, 15);
@@ -487,7 +645,7 @@ export default function ReportsPage() {
     toast.success('CSV Exported', 'Leave report downloaded as CSV.');
   };
 
-  // 5. Audit Logs Report PDF & CSV
+  // 7. Audit Logs Report PDF & CSV
   const exportAuditPDF = () => {
     const doc = new jsPDF();
     doc.text('V-Syncer Security & System Audit Logs Report', 14, 15);
@@ -527,7 +685,7 @@ export default function ReportsPage() {
     toast.success('CSV Exported', 'Audit logs downloaded as CSV.');
   };
 
-  // 6. Manual Custom Report Handlers
+  // 8. Manual Custom Report Handlers
   const handleOpenCreateModal = () => {
     setEditingReportId(null);
     setManualReportTitle('');
@@ -671,12 +829,16 @@ export default function ReportsPage() {
     );
   }
 
+  const selectedPersonName = weeklyEmployeeId === 'all' 
+    ? null 
+    : employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Staff Member';
+
   return (
     <div className="space-y-6 animate-fade-up">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-xl font-display font-bold text-neu-fg">Executive Reports & Analytics</h2>
-          <p className="text-neu-muted text-sm">Download all operational intelligence & EOD staff reports in both CSV and PDF formats.</p>
+          <h2 className="text-xl font-display font-bold text-neu-fg">Executive Reports & Intelligence Portal</h2>
+          <p className="text-neu-muted text-sm">Download full operational reports, staff work notes, weekly individual summaries, and target metrics in PDF & CSV.</p>
         </div>
 
         {/* Target WhatsApp Config Bar */}
@@ -698,10 +860,10 @@ export default function ReportsPage() {
 
       {/* Summary KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard title="Attendance Logs" value={attendanceCount} icon={Clock} />
+        <StatCard title="Attendance & Work Logs" value={attendanceCount} icon={Clock} />
         <StatCard title="Leave Applications" value={leaveCount} icon={Users} />
+        <StatCard title="Staff Goals & Targets" value={goalsCount} icon={Target} />
         <StatCard title="System Audit Logs" value={auditLogCount} icon={CheckCircle} />
-        <StatCard title="GPS Location Traces" value={execLocationsCount} icon={BarChart} />
       </div>
 
       {/* DASHBOARD 1: Daily Operational Staff & EOD Report */}
@@ -813,29 +975,33 @@ export default function ReportsPage() {
         </div>
       </NeuCard>
 
-      {/* DASHBOARD 2: Weekly Operational Staff Report */}
+      {/* DASHBOARD 2: Weekly Operational Staff Report & Specific Person Breakdown */}
       <NeuCard className="p-6 space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-neu-muted/10">
           <div>
             <h3 className="font-display font-bold text-lg text-neu-fg flex items-center gap-2">
               <CalendarRange size={20} className="text-neu-accent" />
-              Weekly Operational Staff Report & Analytics
+              Weekly Operational Staff Report {selectedPersonName ? `— (${selectedPersonName})` : '& Team Summary'}
             </h3>
-            <p className="text-xs text-neu-muted">7-day aggregated attendance, total work hours, break totals, and compiled EOD work notes.</p>
+            <p className="text-xs text-neu-muted">
+              {selectedPersonName 
+                ? `Detailed 7-day day-by-day timesheet, work hours, breaks, and daily notes for ${selectedPersonName}.` 
+                : '7-day aggregated attendance, total work hours, break totals, and compiled EOD work notes for all staff.'}
+            </p>
           </div>
           <div className="flex flex-wrap gap-2.5">
             <button 
               onClick={exportWeeklyReportWhatsApp}
-              disabled={weeklyEmployeeReport.length === 0}
+              disabled={weeklyEmployeeReport.length === 0 && weeklyDailyBreakdown.length === 0}
               className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 shadow-neu-raised transition-all disabled:opacity-40 cursor-pointer"
             >
               <Send size={14} />
               Send Weekly PDF to WhatsApp (+91 {whatsappNumber})
             </button>
-            <NeuButton onClick={exportWeeklyReportPDF} disabled={weeklyEmployeeReport.length === 0}>
+            <NeuButton onClick={exportWeeklyReportPDF} disabled={weeklyEmployeeReport.length === 0 && weeklyDailyBreakdown.length === 0}>
               <FileText size={16} /> PDF Export
             </NeuButton>
-            <NeuButton onClick={exportWeeklyReportCSV} variant="secondary" disabled={weeklyEmployeeReport.length === 0}>
+            <NeuButton onClick={exportWeeklyReportCSV} variant="secondary" disabled={weeklyEmployeeReport.length === 0 && weeklyDailyBreakdown.length === 0}>
               <Download size={16} /> CSV Export
             </NeuButton>
           </div>
@@ -844,16 +1010,16 @@ export default function ReportsPage() {
         {/* Weekly Filter Toolbar */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <NeuInput 
-            label="Week Start Date (7 Days)" 
+            label="Week Start Date (7 Days Period)" 
             type="date" 
             value={weeklyStartDate}
             onChange={(e) => setWeeklyStartDate(e.target.value)}
           />
           <NeuSelect 
-            label="Target Staff Scope" 
+            label="Select Specific Person / All Staff" 
             options={[
-              { label: 'All Personnel & Staff Members', value: 'all' },
-              ...employees.map(e => ({ label: `${e.full_name || 'Staff Member'} (${e.role || 'Staff'})`, value: e.id }))
+              { label: 'All Personnel & Staff Members (Team Summary)', value: 'all' },
+              ...employees.map(e => ({ label: `👤 ${e.full_name || 'Staff Member'} (${e.role || 'Staff'})`, value: e.id }))
             ]}
             value={weeklyEmployeeId}
             onChange={(e) => setWeeklyEmployeeId(e.target.value)}
@@ -870,44 +1036,173 @@ export default function ReportsPage() {
           </div>
           <div>
             <div className="p-3 bg-neu-bg shadow-neu-inset-sm rounded-xl text-xs font-bold text-neu-fg w-full flex items-center justify-between">
-              <span className="text-neu-muted font-medium">Staff Members:</span>
-              <span className="text-neu-accent font-display text-sm">{weeklyEmployeeReport.length} Active</span>
+              <span className="text-neu-muted font-medium">Scope:</span>
+              <span className="text-neu-accent font-display text-sm truncate max-w-[130px]">
+                {selectedPersonName || `${weeklyEmployeeReport.length} Staff Members`}
+              </span>
             </div>
           </div>
         </div>
 
-        {/* Weekly Report Preview Table */}
+        {/* Weekly Report Preview: Specific Person Daily Breakdown vs Team Summary */}
         <div className="space-y-3">
-          <h4 className="text-xs font-bold uppercase tracking-wider text-neu-muted">Weekly Staff Summary Table</h4>
+          <h4 className="text-xs font-bold uppercase tracking-wider text-neu-muted">
+            {selectedPersonName ? `7-Day Daily Timesheet & Notes (${selectedPersonName})` : 'Weekly Team Performance Summary'}
+          </h4>
+
           {weeklyFilterLoading ? (
             <SkeletonCard className="h-36" />
-          ) : weeklyEmployeeReport.length === 0 ? (
+          ) : weeklyEmployeeId !== 'all' ? (
+            /* Specific Person Day-by-Day View */
+            weeklyDailyBreakdown.length === 0 ? (
+              <div className="p-8 text-center bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
+                <CalendarRange size={28} className="mx-auto text-neu-muted opacity-40" />
+                <p className="font-bold text-sm text-neu-fg">No records found for {selectedPersonName} in this 7-day period</p>
+                <p className="text-xs text-neu-muted">Try choosing another week start date.</p>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-80 overflow-y-auto scrollbar-hide">
+                {weeklyDailyBreakdown.map((d) => (
+                  <div key={d.id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-3 text-xs">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-neu-fg">{d.day_name}</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-neu-bg shadow-neu-small text-neu-accent">
+                          {d.date}
+                        </span>
+                        <span className="text-[11px] text-emerald-600 font-bold">
+                          {d.total_work_hours} hrs worked
+                        </span>
+                        <span className="text-[11px] text-amber-600 font-medium">
+                          ({d.break_mins} mins break)
+                        </span>
+                      </div>
+                      <div className="mt-2 p-2 bg-neu-bg shadow-neu-inset-xs rounded-lg text-neu-fg font-medium text-xs max-w-2xl flex items-start gap-1.5">
+                        <NotebookTabs size={14} className="text-neu-accent shrink-0 mt-0.5" />
+                        <div>
+                          <strong className="text-neu-accent text-[10px] uppercase tracking-wider block">Daily Work Notes:</strong>
+                          <span>{d.eod_notes}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="font-bold text-neu-accent text-xs">
+                        In: {d.check_in_time ? format(new Date(d.check_in_time), 'hh:mm a') : 'N/A'}
+                      </p>
+                      <p className="text-xs text-neu-muted mt-0.5">
+                        Out: {d.check_out_time ? format(new Date(d.check_out_time), 'hh:mm a') : 'Active Shift'}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          ) : (
+            /* Team Summary View */
+            weeklyEmployeeReport.length === 0 ? (
+              <div className="p-8 text-center bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
+                <CalendarRange size={28} className="mx-auto text-neu-muted opacity-40" />
+                <p className="font-bold text-sm text-neu-fg">No weekly operational records found for this period</p>
+                <p className="text-xs text-neu-muted">Try selecting a different start date for the 7-day period.</p>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-72 overflow-y-auto scrollbar-hide">
+                {weeklyEmployeeReport.map((w) => (
+                  <div key={w.user_id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
+                    <div className="flex justify-between items-center text-xs border-b border-neu-muted/10 pb-2">
+                      <div>
+                        <span className="font-bold text-sm text-neu-fg">{w.employee_name}</span>
+                        <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-neu-accent/10 text-neu-accent">
+                          {w.role}
+                        </span>
+                      </div>
+                      <div className="flex gap-4 font-bold text-xs">
+                        <span>Days Present: <strong className="text-emerald-600">{w.days_present} / 7</strong></span>
+                        <span>Total Work: <strong className="text-neu-accent">{w.total_work_hours} hrs</strong></span>
+                        <span>Total Breaks: <strong className="text-amber-600">{w.total_break_mins} mins</strong></span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-neu-muted font-medium bg-neu-bg shadow-neu-inset-xs p-2.5 rounded-lg">
+                      <strong className="text-neu-fg font-bold block text-[11px] mb-0.5">Compiled Weekly EOD Work Notes:</strong>
+                      {w.compiled_eod_notes}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )
+          )}
+        </div>
+      </NeuCard>
+
+      {/* DASHBOARD 3: Staff Work Notes & EOD Intelligence Report */}
+      <NeuCard className="p-6 space-y-6">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-neu-muted/10">
+          <div>
+            <h3 className="font-display font-bold text-lg text-neu-fg flex items-center gap-2">
+              <NotebookTabs size={20} className="text-neu-accent" />
+              Staff Work Notes & EOD Intelligence Report
+            </h3>
+            <p className="text-xs text-neu-muted">Real-time repository of shift remarks, task notes, and EOD work descriptions submitted by executives.</p>
+          </div>
+          <div className="flex gap-2.5">
+            <NeuButton onClick={exportWorkNotesPDF} disabled={filteredWorkNotes.length === 0}>
+              <FileText size={16} /> PDF Export
+            </NeuButton>
+            <NeuButton onClick={exportWorkNotesCSV} variant="secondary" disabled={filteredWorkNotes.length === 0}>
+              <Download size={16} /> CSV Export
+            </NeuButton>
+          </div>
+        </div>
+
+        {/* Search & Staff Filter */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="md:col-span-2">
+            <NeuInput 
+              placeholder="Search work notes, remarks, or staff name..." 
+              value={workNotesSearch}
+              onChange={(e) => setWorkNotesSearch(e.target.value)}
+            />
+          </div>
+          <div>
+            <NeuSelect 
+              options={[
+                { label: 'All Staff Work Notes', value: 'all' },
+                ...employees.map(e => ({ label: `${e.full_name || 'Staff Member'} (${e.role || 'Staff'})`, value: e.id }))
+              ]}
+              value={workNotesStaffId}
+              onChange={(e) => setWorkNotesStaffId(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Work Notes Feed */}
+        <div className="space-y-3">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-neu-muted">Work Notes Feed ({filteredWorkNotes.length} entries)</h4>
+          {filteredWorkNotes.length === 0 ? (
             <div className="p-8 text-center bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
-              <CalendarRange size={28} className="mx-auto text-neu-muted opacity-40" />
-              <p className="font-bold text-sm text-neu-fg">No weekly operational records found for this period</p>
-              <p className="text-xs text-neu-muted">Try selecting a different start date for the 7-day period.</p>
+              <NotebookTabs size={28} className="mx-auto text-neu-muted opacity-40" />
+              <p className="font-bold text-sm text-neu-fg">No work notes matching search criteria</p>
+              <p className="text-xs text-neu-muted">Try adjusting search query or employee filter.</p>
             </div>
           ) : (
             <div className="space-y-3 max-h-72 overflow-y-auto scrollbar-hide">
-              {weeklyEmployeeReport.map((w) => (
-                <div key={w.user_id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
-                  <div className="flex justify-between items-center text-xs border-b border-neu-muted/10 pb-2">
-                    <div>
-                      <span className="font-bold text-sm text-neu-fg">{w.employee_name}</span>
-                      <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-neu-accent/10 text-neu-accent">
-                        {w.role}
+              {filteredWorkNotes.map((item) => (
+                <div key={item.id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-3 text-xs">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm text-neu-fg">{item.profiles?.full_name || 'Staff Member'}</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-neu-bg shadow-neu-small text-neu-accent">
+                        {item.date}
                       </span>
                     </div>
-                    <div className="flex gap-4 font-bold text-xs">
-                      <span>Days Present: <strong className="text-emerald-600">{w.days_present} / 7</strong></span>
-                      <span>Total Work: <strong className="text-neu-accent">{w.total_work_hours} hrs</strong></span>
-                      <span>Total Breaks: <strong className="text-amber-600">{w.total_break_mins} mins</strong></span>
-                    </div>
+                    <p className="text-xs text-neu-fg mt-1.5 bg-neu-bg shadow-neu-inset-xs p-2.5 rounded-lg max-w-2xl font-medium">
+                      "{item.notes || item.checkout_notes || item.remarks}"
+                    </p>
                   </div>
-                  <p className="text-xs text-neu-muted font-medium bg-neu-bg shadow-neu-inset-xs p-2.5 rounded-lg">
-                    <strong className="text-neu-fg font-bold block text-[11px] mb-0.5">Compiled Weekly EOD Work Notes:</strong>
-                    {w.compiled_eod_notes}
-                  </p>
+                  <div className="text-right shrink-0 text-neu-muted text-[11px]">
+                    <p>Check Out: <strong className="text-neu-fg">{item.check_out_time ? format(new Date(item.check_out_time), 'hh:mm a') : 'On Duty'}</strong></p>
+                    <p className="mt-0.5">Duty: <strong className="text-emerald-600">{item.total_work_minutes ? `${Math.round(item.total_work_minutes / 60)} hrs` : 'Standard'}</strong></p>
+                  </div>
                 </div>
               ))}
             </div>
@@ -915,8 +1210,30 @@ export default function ReportsPage() {
         </div>
       </NeuCard>
 
-      {/* DASHBOARD 3: General Reports Hub (Both PDF & CSV for All) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      {/* DASHBOARD 4: General Operations & Performance Hub (Both PDF & CSV) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {/* Targets & Goals Card */}
+        <NeuCard className="p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-neu-bg shadow-neu-small rounded-xl text-neu-accent">
+              <Target size={24} />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-neu-fg">Staff Goals & Targets</h3>
+              <p className="text-xs text-neu-muted">{goalsCount} active targets.</p>
+            </div>
+          </div>
+          <p className="text-sm text-neu-muted">Employee revenue, jobs, and KPI targets performance audit.</p>
+          <div className="flex gap-2.5 pt-2">
+            <NeuButton onClick={exportGoalsReportPDF} className="flex-1">
+              <FileText size={16} /> PDF
+            </NeuButton>
+            <NeuButton onClick={exportGoalsReportCSV} variant="secondary" className="flex-1">
+              <Download size={16} /> CSV
+            </NeuButton>
+          </div>
+        </NeuCard>
+
         {/* Attendance Export Card */}
         <NeuCard className="p-6 space-y-4">
           <div className="flex items-center gap-3">
@@ -924,7 +1241,7 @@ export default function ReportsPage() {
               <Clock size={24} />
             </div>
             <div>
-              <h3 className="font-display font-bold text-neu-fg">Attendance Logs Report</h3>
+              <h3 className="font-display font-bold text-neu-fg">Attendance Logs</h3>
               <p className="text-xs text-neu-muted">{attendanceCount} records ready.</p>
             </div>
           </div>
@@ -946,11 +1263,11 @@ export default function ReportsPage() {
               <Users size={24} />
             </div>
             <div>
-              <h3 className="font-display font-bold text-neu-fg">Leave Requests Report</h3>
+              <h3 className="font-display font-bold text-neu-fg">Leave Requests</h3>
               <p className="text-xs text-neu-muted">{leaveCount} applications logged.</p>
             </div>
           </div>
-          <p className="text-sm text-neu-muted">Employee leave applications, classifications, and manager approvals.</p>
+          <p className="text-sm text-neu-muted">Employee leave applications, classifications, and approvals.</p>
           <div className="flex gap-2.5 pt-2">
             <NeuButton onClick={exportLeavesPDF} className="flex-1">
               <FileText size={16} /> PDF
@@ -972,7 +1289,7 @@ export default function ReportsPage() {
               <p className="text-xs text-neu-muted">{auditLogCount} security records.</p>
             </div>
           </div>
-          <p className="text-sm text-neu-muted">Immutable system audit trail and user action transaction histories.</p>
+          <p className="text-sm text-neu-muted">Immutable system audit trail and user action histories.</p>
           <div className="flex gap-2.5 pt-2">
             <NeuButton onClick={exportAuditPDF} className="flex-1">
               <FileText size={16} /> PDF
@@ -984,7 +1301,7 @@ export default function ReportsPage() {
         </NeuCard>
       </div>
 
-      {/* DASHBOARD 4: Manual Executive Custom Reports */}
+      {/* DASHBOARD 5: Manual Executive Custom Reports */}
       <NeuCard className="p-6 space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-neu-muted/10">
           <div>
