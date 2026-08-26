@@ -8,7 +8,7 @@ import { NeuInput } from '@/components/neu/NeuInput';
 import { NeuSelect } from '@/components/neu/NeuSelect';
 import { StatCard } from '@/components/neu/StatCard';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck, Target, NotebookTabs, RefreshCw } from 'lucide-react';
+import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck, Target, NotebookTabs, RefreshCw, Edit2 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
@@ -21,6 +21,7 @@ export default function ReportsPage() {
   const supabase = createClient();
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState<any[]>([]);
+  const [profilesMap, setProfilesMap] = useState<Map<string, any>>(new Map());
 
   // Target WhatsApp Number
   const [whatsappNumber, setWhatsappNumber] = useState('9597513372');
@@ -54,7 +55,12 @@ export default function ReportsPage() {
   const [workNotesSearch, setWorkNotesSearch] = useState('');
   const [workNotesStaffId, setWorkNotesStaffId] = useState('all');
 
-  // 4. Manual Report Modal State & Full CRUD State
+  // 4. Quick Edit Note Modal State
+  const [isEditNoteModalOpen, setIsEditNoteModalOpen] = useState(false);
+  const [editingNoteRecord, setEditingNoteRecord] = useState<any>(null);
+  const [editNoteText, setEditNoteText] = useState('');
+
+  // 5. Manual Report Modal State & Full CRUD State
   const [isManualReportModalOpen, setIsManualReportModalOpen] = useState(false);
   const [editingReportId, setEditingReportId] = useState<string | null>(null);
   const [manualReportTitle, setManualReportTitle] = useState('');
@@ -127,7 +133,7 @@ export default function ReportsPage() {
           breakSummary = `${bStart} - ${bEnd} (${totalBreakMins} mins)`;
         }
 
-        const eodNotes = r.notes || r.checkout_notes || r.remarks || 'Standard Shift Completed';
+        const eodNotes = r.notes || r.checkout_notes || r.remarks || 'Standard Shift Completed on Schedule';
 
         return {
           ...r,
@@ -174,7 +180,7 @@ export default function ReportsPage() {
         const userId = r.user_id || 'unknown';
         const empName = r.profiles?.full_name || 'Staff Member';
         const empRole = r.profiles?.role || 'Executive';
-        const eodNote = r.notes || r.checkout_notes || r.remarks || 'Regular Duty Log';
+        const eodNote = r.notes || r.checkout_notes || r.remarks || 'Standard Shift Completed on Schedule';
         const workMins = Number(r.total_work_minutes) || 0;
 
         const breaks = r.break_records || [];
@@ -238,6 +244,11 @@ export default function ReportsPage() {
         .order('full_name', { ascending: true });
 
       setEmployees(profs || []);
+      const pMap = new Map<string, any>();
+      (profs || []).forEach(p => {
+        if (p.id) pMap.set(p.id, p);
+      });
+      setProfilesMap(pMap);
 
       const [
         { data: att, count: attCnt },
@@ -247,7 +258,7 @@ export default function ReportsPage() {
         { data: manualRpts },
         { data: goals, count: goalsCnt }
       ] = await Promise.all([
-        supabase.from('attendance_records').select('*, profiles!attendance_records_user_id_fkey(full_name, role)').order('date', { ascending: false }),
+        supabase.from('attendance_records').select('*').order('date', { ascending: false }),
         supabase.from('leave_requests').select('*, profiles(full_name)').order('created_at', { ascending: false }),
         supabase.from('audit_logs').select('*').order('created_at', { ascending: false }),
         supabase.from('exec_locations').select('id', { count: 'exact', head: true }),
@@ -255,7 +266,21 @@ export default function ReportsPage() {
         supabase.from('employee_goals').select('*').order('created_at', { ascending: false })
       ]);
 
-      setAttendanceData(att || []);
+      const mappedAtt = (att || []).map(a => {
+        const staffObj = pMap.get(a.user_id);
+        const staffName = staffObj?.full_name || 'Staff Member';
+        const staffRole = staffObj?.role || 'Executive';
+        const noteText = a.notes || a.checkout_notes || a.remarks || 'Standard Shift Completed on Schedule';
+
+        return {
+          ...a,
+          employee_name: staffName,
+          profiles: { full_name: staffName, role: staffRole },
+          eod_notes: noteText
+        };
+      });
+
+      setAttendanceData(mappedAtt);
       setLeaveData(lve || []);
       setAuditData(aud || []);
       setManualReports(manualRpts || []);
@@ -481,16 +506,17 @@ export default function ReportsPage() {
 
   // 3. Work Notes & EOD Intelligence Report (PDF & CSV)
   const filteredWorkNotes = attendanceData.filter(a => {
-    const notesStr = (a.notes || a.checkout_notes || a.remarks || '').toLowerCase();
-    const staffName = (a.profiles?.full_name || '').toLowerCase();
-    const matchesSearch = notesStr.includes(workNotesSearch.toLowerCase()) || staffName.includes(workNotesSearch.toLowerCase());
+    const noteText = (a.eod_notes || a.notes || a.checkout_notes || a.remarks || 'Standard Shift Completed').toLowerCase();
+    const staffName = (a.employee_name || a.profiles?.full_name || '').toLowerCase();
+    const matchesSearch = !workNotesSearch || noteText.includes(workNotesSearch.toLowerCase()) || staffName.includes(workNotesSearch.toLowerCase());
     const matchesStaff = workNotesStaffId === 'all' || a.user_id === workNotesStaffId;
-    return matchesSearch && matchesStaff && (a.notes || a.checkout_notes || a.remarks);
+    return matchesSearch && matchesStaff;
   });
 
   const exportWorkNotesPDF = () => {
     const doc = new jsPDF();
-    doc.text('V-Syncer Operations — Staff Work Notes & EOD Activity Report', 14, 15);
+    const targetStaffName = workNotesStaffId === 'all' ? 'All Staff' : (employees.find(e => e.id === workNotesStaffId)?.full_name || 'Staff');
+    doc.text(`V-Syncer Operations — Staff Work Notes & EOD Activity Report (${targetStaffName})`, 14, 15);
     doc.setFontSize(10);
     doc.text(`Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Matching Records: ${filteredWorkNotes.length}`, 14, 22);
 
@@ -498,34 +524,76 @@ export default function ReportsPage() {
       startY: 28,
       head: [['Employee', 'Date', 'Check Out Time', 'Work Notes / EOD Remarks to Manager']],
       body: filteredWorkNotes.map(a => [
-        a.profiles?.full_name || 'Staff Member',
+        a.employee_name || a.profiles?.full_name || 'Staff Member',
         a.date || 'N/A',
         a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
-        a.notes || a.checkout_notes || a.remarks || 'Standard Duty Completed'
+        a.eod_notes || a.notes || a.checkout_notes || a.remarks || 'Standard Duty Completed'
       ])
     });
-    doc.save(`Staff_Work_Notes_Report_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    doc.save(`Staff_Work_Notes_${targetStaffName.replace(/\s+/g, '_')}_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
     playSuccess();
     toast.success('PDF Exported', 'Work notes report downloaded as PDF.');
   };
 
   const exportWorkNotesCSV = () => {
+    const targetStaffName = workNotesStaffId === 'all' ? 'All_Staff' : (employees.find(e => e.id === workNotesStaffId)?.full_name || 'Staff').replace(/\s+/g, '_');
     const csv = Papa.unparse(filteredWorkNotes.map(a => ({
-      EmployeeName: a.profiles?.full_name || 'Staff Member',
+      EmployeeName: a.employee_name || a.profiles?.full_name || 'Staff Member',
       Date: a.date,
       CheckIn: a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm:ss a') : 'N/A',
       CheckOut: a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm:ss a') : 'Active',
-      WorkNotes: a.notes || a.checkout_notes || a.remarks || 'Standard Duty',
+      WorkNotes: a.eod_notes || a.notes || a.checkout_notes || a.remarks || 'Standard Duty',
       TotalWorkMinutes: a.total_work_minutes || 0
     })));
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Staff_Work_Notes_Report_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.setAttribute('download', `Staff_Work_Notes_${targetStaffName}_${format(new Date(), 'yyyy-MM-dd')}.csv`);
     link.click();
     playSuccess();
     toast.success('CSV Exported', 'Work notes report downloaded as CSV.');
+  };
+
+  const handleOpenEditNoteModal = (item: any) => {
+    setEditingNoteRecord(item);
+    setEditNoteText(item.eod_notes || item.notes || item.checkout_notes || item.remarks || '');
+    setIsEditNoteModalOpen(true);
+  };
+
+  const handleSaveUpdatedNoteFromReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingNoteRecord) return;
+
+    try {
+      const { error } = await supabase
+        .from('attendance_records')
+        .update({
+          notes: editNoteText,
+          checkout_notes: editNoteText,
+          remarks: editNoteText
+        })
+        .eq('id', editingNoteRecord.id);
+
+      if (error) throw error;
+
+      setAttendanceData(prev => prev.map(a => a.id === editingNoteRecord.id ? {
+        ...a,
+        notes: editNoteText,
+        checkout_notes: editNoteText,
+        remarks: editNoteText,
+        eod_notes: editNoteText
+      } : a));
+
+      playSuccess();
+      toast.success('Work Notes Updated', 'Notes successfully saved to database and synchronized.');
+      setIsEditNoteModalOpen(false);
+      setEditingNoteRecord(null);
+    } catch (err) {
+      console.error('Error updating note:', err);
+      playError();
+      toast.error('Update Failed', 'Could not update work note.');
+    }
   };
 
   // 4. Employee Goals & Target Allocation Report (PDF & CSV)
@@ -583,7 +651,7 @@ export default function ReportsPage() {
       startY: 28,
       head: [['Employee', 'Date', 'Check In', 'Check Out', 'Status']],
       body: attendanceData.map(a => [
-        a.profiles?.full_name || 'Staff',
+        a.employee_name || a.profiles?.full_name || 'Staff',
         a.date || 'N/A',
         a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : 'N/A',
         a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
@@ -598,7 +666,7 @@ export default function ReportsPage() {
   const exportAttendanceCSV = () => {
     const csv = Papa.unparse(attendanceData.map(a => ({
       ID: a.id,
-      Employee: a.profiles?.full_name || 'Staff',
+      Employee: a.employee_name || a.profiles?.full_name || 'Staff',
       Date: a.date,
       CheckIn: a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : 'N/A',
       CheckOut: a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
@@ -1210,21 +1278,30 @@ export default function ReportsPage() {
           ) : (
             <div className="space-y-3 max-h-72 overflow-y-auto scrollbar-hide">
               {filteredWorkNotes.map((item) => (
-                <div key={item.id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-3 text-xs">
+                <div key={item.id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-3 text-xs group">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm text-neu-fg">{item.profiles?.full_name || 'Staff Member'}</span>
+                      <span className="font-bold text-sm text-neu-fg">{item.employee_name || item.profiles?.full_name || 'Staff Member'}</span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-neu-bg shadow-neu-small text-neu-accent">
                         {item.date}
                       </span>
                     </div>
                     <p className="text-xs text-neu-fg mt-1.5 bg-neu-bg shadow-neu-inset-xs p-2.5 rounded-lg max-w-2xl font-medium">
-                      "{item.notes || item.checkout_notes || item.remarks}"
+                      "{item.eod_notes || item.notes || item.checkout_notes || item.remarks}"
                     </p>
                   </div>
-                  <div className="text-right shrink-0 text-neu-muted text-[11px]">
-                    <p>Check Out: <strong className="text-neu-fg">{item.check_out_time ? format(new Date(item.check_out_time), 'hh:mm a') : 'On Duty'}</strong></p>
-                    <p className="mt-0.5">Duty: <strong className="text-emerald-600">{item.total_work_minutes ? `${Math.round(item.total_work_minutes / 60)} hrs` : 'Standard'}</strong></p>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <div className="text-right text-neu-muted text-[11px]">
+                      <p>Check Out: <strong className="text-neu-fg">{item.check_out_time ? format(new Date(item.check_out_time), 'hh:mm a') : 'On Duty'}</strong></p>
+                      <p className="mt-0.5">Duty: <strong className="text-emerald-600">{item.total_work_minutes ? `${Math.round(item.total_work_minutes / 60)} hrs` : 'Standard'}</strong></p>
+                    </div>
+                    <button
+                      onClick={() => handleOpenEditNoteModal(item)}
+                      className="p-1.5 rounded-lg bg-neu-bg shadow-neu-small hover:text-neu-accent text-neu-muted transition-all cursor-pointer opacity-80 hover:opacity-100"
+                      title="Edit this note"
+                    >
+                      <Edit2 size={13} />
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1384,6 +1461,30 @@ export default function ReportsPage() {
           )}
         </div>
       </NeuCard>
+
+      {/* Edit Work Note Modal */}
+      <NeuModal isOpen={isEditNoteModalOpen} onClose={() => setIsEditNoteModalOpen(false)} title="Edit Staff Work Notes">
+        <form onSubmit={handleSaveUpdatedNoteFromReport} className="space-y-4">
+          <p className="text-xs text-neu-muted">
+            Staff: <strong className="text-neu-fg">{editingNoteRecord?.employee_name}</strong> | Date: <strong className="text-neu-fg">{editingNoteRecord?.date}</strong>
+          </p>
+          <NeuInput 
+            label="Updated Work Notes / EOD Remarks" 
+            placeholder="Enter revised work notes..."
+            value={editNoteText}
+            onChange={(e) => setEditNoteText(e.target.value)}
+            required
+          />
+          <div className="flex justify-end gap-3 pt-4">
+            <NeuButton type="button" variant="secondary" onClick={() => setIsEditNoteModalOpen(false)}>
+              Cancel
+            </NeuButton>
+            <NeuButton type="submit">
+              Save Work Notes
+            </NeuButton>
+          </div>
+        </form>
+      </NeuModal>
 
       {/* Create / Edit Manual Report Modal */}
       <NeuModal 
