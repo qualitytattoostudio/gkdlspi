@@ -104,8 +104,11 @@ export default function TeamsPage() {
     setEmail('');
   };
 
+  const [isDeleting, setIsDeleting] = useState(false);
+
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
+    setIsDeleting(true);
 
     try {
       // Soft-delete: mark is_active = false so historical attendance records remain intact while user is removed from portal
@@ -116,14 +119,29 @@ export default function TeamsPage() {
 
       if (error) throw error;
 
+      // Create audit log entry
+      try {
+        await supabase.from('audit_logs').insert([{
+          action: 'Staff Deactivated',
+          table_name: 'profiles',
+          record_id: deleteTarget.id,
+          user_id: deleteTarget.id,
+          created_at: new Date().toISOString()
+        }]);
+      } catch (auditErr) {
+        console.warn('Audit log write error:', auditErr);
+      }
+
       setEmployees(prev => prev.filter(e => e.id !== deleteTarget.id));
       playSuccess();
-      toast.success('Staff Removed', `${deleteTarget.full_name} has been removed from active staff.`);
+      toast.success('Staff Deactivated', `${deleteTarget.full_name} has been removed from active staff.`);
       setDeleteTarget(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error removing staff:', err);
       playError();
-      toast.error('Deletion Failed', 'Could not remove staff member.');
+      toast.error('Deactivation Failed', err?.message || 'Could not deactivate staff member.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -365,14 +383,15 @@ export default function TeamsPage() {
             </div>
           </div>
           <div className="flex justify-end gap-3 pt-2">
-            <NeuButton variant="secondary" onClick={() => setDeleteTarget(null)}>
+            <NeuButton variant="secondary" onClick={() => setDeleteTarget(null)} disabled={isDeleting}>
               Cancel
             </NeuButton>
             <button 
               onClick={handleConfirmDelete}
-              className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 active:scale-95 text-white font-bold text-xs shadow-neu-raised transition-all cursor-pointer"
+              disabled={isDeleting}
+              className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 active:scale-95 text-white font-bold text-xs shadow-neu-raised transition-all cursor-pointer disabled:opacity-50"
             >
-              Confirm Deactivation
+              {isDeleting ? 'Deactivating...' : 'Confirm Deactivation'}
             </button>
           </div>
         </div>
