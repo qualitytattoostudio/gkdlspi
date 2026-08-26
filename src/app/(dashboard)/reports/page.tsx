@@ -8,7 +8,7 @@ import { NeuInput } from '@/components/neu/NeuInput';
 import { NeuSelect } from '@/components/neu/NeuSelect';
 import { StatCard } from '@/components/neu/StatCard';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck, Target, NotebookTabs, RefreshCw, Edit2 } from 'lucide-react';
+import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck, Target, NotebookTabs, RefreshCw, Edit2, Coffee, AlertCircle } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
@@ -48,7 +48,7 @@ export default function ReportsPage() {
   const [weeklyStartDate, setWeeklyStartDate] = useState(format(subDays(new Date(), 6), 'yyyy-MM-dd'));
   const [weeklyEmployeeId, setWeeklyEmployeeId] = useState<string>('all');
   const [weeklyEmployeeReport, setWeeklyEmployeeReport] = useState<any[]>([]);
-  const [weeklyDailyBreakdown, setWeeklyDailyBreakdown] = useState<any[]>([]); // For specific person day-by-day
+  const [weeklyDailyBreakdown, setWeeklyDailyBreakdown] = useState<any[]>([]); // 7-Day Comprehensive Dossier
   const [weeklyFilterLoading, setWeeklyFilterLoading] = useState(false);
 
   // 3. Work Notes & EOD Intelligence Report Filter
@@ -110,7 +110,7 @@ export default function ReportsPage() {
     try {
       let query = supabase
         .from('attendance_records')
-        .select('*, profiles!attendance_records_user_id_fkey(full_name, role), break_records(*)')
+        .select('*, break_records(*)')
         .eq('date', dateToFetch);
 
       if (empIdToFetch !== 'all') {
@@ -121,6 +121,10 @@ export default function ReportsPage() {
       if (error) throw error;
 
       const formatted = (data || []).map(r => {
+        const staffObj = profilesMap.get(r.user_id);
+        const staffName = staffObj?.full_name || 'Staff Member';
+        const staffRole = staffObj?.role || 'Executive';
+
         const breaks = r.break_records || [];
         let totalBreakMins = 0;
         let breakSummary = 'No Breaks Taken';
@@ -137,6 +141,8 @@ export default function ReportsPage() {
 
         return {
           ...r,
+          employee_name: staffName,
+          profiles: { full_name: staffName, role: staffRole },
           break_summary: breakSummary,
           total_break_mins: totalBreakMins,
           eod_notes: eodNotes
@@ -150,9 +156,9 @@ export default function ReportsPage() {
     } finally {
       setDailyFilterLoading(false);
     }
-  }, [supabase]);
+  }, [supabase, profilesMap]);
 
-  // Fetch Weekly Operational Staff Report & Specific Person Breakdown
+  // Fetch Comprehensive Weekly Operational Staff Report (Shift Timings, Work Notes, Leave, Breaks, Day-by-Day)
   const executeWeeklyReportFilter = useCallback(async (startDateStr: string, empIdToFetch: string) => {
     setWeeklyFilterLoading(true);
     try {
@@ -160,69 +166,183 @@ export default function ReportsPage() {
       const endDt = addDays(startDt, 6);
       const endDateStr = format(endDt, 'yyyy-MM-dd');
 
-      let query = supabase
+      // 1. Fetch Attendance Records with Breaks in this 7-day period
+      let attQuery = supabase
         .from('attendance_records')
-        .select('*, profiles!attendance_records_user_id_fkey(full_name, role), break_records(*)')
+        .select('*, break_records(*)')
         .gte('date', startDateStr)
         .lte('date', endDateStr);
 
       if (empIdToFetch !== 'all') {
-        query = query.eq('user_id', empIdToFetch);
+        attQuery = attQuery.eq('user_id', empIdToFetch);
       }
 
-      const { data, error } = await query.order('date', { ascending: true });
-      if (error) throw error;
+      // 2. Fetch Leave Applications in this 7-day period
+      let leaveQuery = supabase
+        .from('leave_requests')
+        .select('*')
+        .lte('start_date', endDateStr)
+        .gte('end_date', startDateStr);
+
+      if (empIdToFetch !== 'all') {
+        leaveQuery = leaveQuery.eq('user_id', empIdToFetch);
+      }
+
+      const [{ data: attData, error: attErr }, { data: leavesData, error: leaveErr }] = await Promise.all([
+        attQuery.order('date', { ascending: true }),
+        leaveQuery
+      ]);
+
+      if (attErr) throw attErr;
 
       const empGroupMap = new Map<string, any>();
       const dailyBreakdownList: any[] = [];
 
-      (data || []).forEach(r => {
-        const userId = r.user_id || 'unknown';
-        const empName = r.profiles?.full_name || 'Staff Member';
-        const empRole = r.profiles?.role || 'Executive';
-        const eodNote = r.notes || r.checkout_notes || r.remarks || 'Standard Shift Completed on Schedule';
-        const workMins = Number(r.total_work_minutes) || 0;
+      // If a specific person is selected, build all 7 calendar days sequentially
+      if (empIdToFetch !== 'all') {
+        const staffObj = profilesMap.get(empIdToFetch);
+        const empName = staffObj?.full_name || 'Staff Member';
+        const empRole = staffObj?.role || 'Executive';
 
-        const breaks = r.break_records || [];
-        const breakMins = breaks.reduce((sum: number, b: any) => sum + (Number(b.break_duration) || Number(b.break_duration_minutes) || 0), 0);
+        let totalWeeklyMins = 0;
+        let totalWeeklyBreaks = 0;
+        let daysWorkedCount = 0;
+        let leaveDaysCount = 0;
+        const compiledNotesList: string[] = [];
 
-        if (!empGroupMap.has(userId)) {
-          empGroupMap.set(userId, {
-            user_id: userId,
+        for (let i = 0; i < 7; i++) {
+          const currentDayDt = addDays(startDt, i);
+          const currentDayStr = format(currentDayDt, 'yyyy-MM-dd');
+          const dayOfWeek = format(currentDayDt, 'EEEE');
+
+          // Find attendance record for this day
+          const dayAtt = (attData || []).find(a => a.date === currentDayStr);
+          
+          // Find leave request covering this day
+          const dayLeave = (leavesData || []).find(l => {
+            const sDate = l.start_date ? l.start_date.substring(0, 10) : '';
+            const eDate = l.end_date ? l.end_date.substring(0, 10) : sDate;
+            return currentDayStr >= sDate && currentDayStr <= eDate;
+          });
+
+          let status = 'Rest Day / Off Duty';
+          let shiftTiming = 'Off Duty / No Shift';
+          let workHours = '0.0';
+          let breakSummary = 'No Breaks';
+          let breakMins = 0;
+          let notes = 'Rest Day / Off Duty';
+          let leaveDetails = 'None';
+
+          if (dayAtt) {
+            status = dayAtt.status || 'present';
+            daysWorkedCount += 1;
+            const wMins = Number(dayAtt.total_work_minutes) || 0;
+            totalWeeklyMins += wMins;
+            workHours = (wMins / 60).toFixed(1);
+
+            const inTime = dayAtt.check_in_time ? format(new Date(dayAtt.check_in_time), 'hh:mm a') : 'N/A';
+            const outTime = dayAtt.check_out_time ? format(new Date(dayAtt.check_out_time), 'hh:mm a') : 'Active Duty';
+            shiftTiming = `${inTime} — ${outTime}`;
+
+            const breaks = dayAtt.break_records || [];
+            if (breaks.length > 0) {
+              breakMins = breaks.reduce((sum: number, b: any) => sum + (Number(b.break_duration) || Number(b.break_duration_minutes) || 0), 0);
+              totalWeeklyBreaks += breakMins;
+              const firstB = breaks[0];
+              const bStart = firstB.break_start ? format(new Date(firstB.break_start), 'hh:mm a') : '';
+              const bEnd = firstB.break_end ? format(new Date(firstB.break_end), 'hh:mm a') : 'Active';
+              breakSummary = `${bStart} - ${bEnd} (${breakMins} mins)`;
+            }
+
+            notes = dayAtt.notes || dayAtt.checkout_notes || dayAtt.remarks || 'Standard Shift Completed on Schedule';
+            compiledNotesList.push(`${currentDayStr} (${dayOfWeek}): ${notes}`);
+          }
+
+          if (dayLeave) {
+            leaveDaysCount += 1;
+            leaveDetails = `${dayLeave.leave_type || 'Leave'} [${(dayLeave.status || 'pending').toUpperCase()}]: ${dayLeave.reason || 'No reason provided'}`;
+            if (!dayAtt) {
+              status = `On Leave (${dayLeave.leave_type || 'General'})`;
+              shiftTiming = `Leave Approved`;
+              notes = `Applied Leave: ${dayLeave.reason || 'Leave Approved'}`;
+            }
+          }
+
+          dailyBreakdownList.push({
+            id: dayAtt?.id || `day-${i}`,
+            user_id: empIdToFetch,
             employee_name: empName,
             role: empRole,
-            days_present: 0,
-            total_work_mins: 0,
-            total_break_mins: 0,
-            eod_notes_list: []
+            date: currentDayStr,
+            day_name: dayOfWeek,
+            status,
+            shift_timing: shiftTiming,
+            total_work_hours: workHours,
+            break_summary: breakSummary,
+            break_mins: breakMins,
+            eod_notes: notes,
+            leave_details: leaveDetails,
+            has_leave: !!dayLeave,
+            has_att: !!dayAtt
           });
         }
 
-        const group = empGroupMap.get(userId);
-        if (r.status === 'present' || r.check_in_time) group.days_present += 1;
-        group.total_work_mins += workMins;
-        group.total_break_mins += breakMins;
-        if (eodNote) group.eod_notes_list.push(`${r.date}: ${eodNote}`);
-
-        dailyBreakdownList.push({
-          id: r.id,
-          user_id: userId,
+        empGroupMap.set(empIdToFetch, {
+          user_id: empIdToFetch,
           employee_name: empName,
-          date: r.date,
-          day_name: format(parseISO(r.date), 'EEEE'),
-          check_in_time: r.check_in_time,
-          check_out_time: r.check_out_time,
-          total_work_hours: (workMins / 60).toFixed(1),
-          break_mins: breakMins,
-          eod_notes: eodNote,
-          status: r.status || 'present'
+          role: empRole,
+          days_present: daysWorkedCount,
+          leave_days: leaveDaysCount,
+          total_work_mins: totalWeeklyMins,
+          total_break_mins: totalWeeklyBreaks,
+          total_work_hours: (totalWeeklyMins / 60).toFixed(1),
+          compiled_eod_notes: compiledNotesList.length > 0 ? compiledNotesList.join(' | ') : 'Regular Weekly Shift Logs'
         });
-      });
+      } else {
+        // Team Summary Mode: Aggregate across all active staff
+        (attData || []).forEach(r => {
+          const userId = r.user_id || 'unknown';
+          const staffObj = profilesMap.get(userId);
+          const empName = staffObj?.full_name || 'Staff Member';
+          const empRole = staffObj?.role || 'Executive';
+          const eodNote = r.notes || r.checkout_notes || r.remarks || 'Standard Shift Completed on Schedule';
+          const workMins = Number(r.total_work_minutes) || 0;
+
+          const breaks = r.break_records || [];
+          const breakMins = breaks.reduce((sum: number, b: any) => sum + (Number(b.break_duration) || Number(b.break_duration_minutes) || 0), 0);
+
+          if (!empGroupMap.has(userId)) {
+            empGroupMap.set(userId, {
+              user_id: userId,
+              employee_name: empName,
+              role: empRole,
+              days_present: 0,
+              leave_days: 0,
+              total_work_mins: 0,
+              total_break_mins: 0,
+              eod_notes_list: []
+            });
+          }
+
+          const group = empGroupMap.get(userId);
+          if (r.status === 'present' || r.check_in_time) group.days_present += 1;
+          group.total_work_mins += workMins;
+          group.total_break_mins += breakMins;
+          if (eodNote) group.eod_notes_list.push(`${r.date}: ${eodNote}`);
+        });
+
+        // Add leave counts to team summary
+        (leavesData || []).forEach(l => {
+          if (empGroupMap.has(l.user_id)) {
+            empGroupMap.get(l.user_id).leave_days += 1;
+          }
+        });
+      }
 
       const weeklyFormatted = Array.from(empGroupMap.values()).map(g => ({
         ...g,
         total_work_hours: (g.total_work_mins / 60).toFixed(1),
-        compiled_eod_notes: g.eod_notes_list.length > 0 ? g.eod_notes_list.join(' | ') : 'Regular Weekly Shift Logs'
+        compiled_eod_notes: g.eod_notes_list?.length > 0 ? g.eod_notes_list.join(' | ') : (g.compiled_eod_notes || 'Regular Weekly Shift Logs')
       }));
 
       setWeeklyEmployeeReport(weeklyFormatted);
@@ -234,7 +354,7 @@ export default function ReportsPage() {
     } finally {
       setWeeklyFilterLoading(false);
     }
-  }, [supabase]);
+  }, [supabase, profilesMap]);
 
   const fetchInitialData = useCallback(async () => {
     try {
@@ -317,6 +437,9 @@ export default function ReportsPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'work_notes' }, () => {
         fetchInitialData();
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leave_requests' }, () => {
+        fetchInitialData();
+      })
       .subscribe();
 
     return () => {
@@ -396,48 +519,61 @@ export default function ReportsPage() {
     transferReportToWhatsApp(whatsappNumber, `Daily EOD Report (${selectedDate})`, summaryLines, doc);
   };
 
-  // 2. Weekly Report PDF & CSV (With Specific Person Day-by-Day Support)
+  // 2. Comprehensive Weekly Report PDF & CSV (All 7 Days Shift Timings, Breaks, Notes & Leaves)
   const buildWeeklyReportPDF = () => {
-    const doc = new jsPDF();
+    const isSpecificPerson = weeklyEmployeeId !== 'all';
+    const doc = new jsPDF(isSpecificPerson ? 'landscape' : 'portrait');
     const endDt = addDays(parseISO(weeklyStartDate), 6);
     const endDateStr = format(endDt, 'yyyy-MM-dd');
-    const isSpecificPerson = weeklyEmployeeId !== 'all';
-    const targetPersonName = employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Specific Staff Member';
+    const targetPersonName = employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Staff Member';
     
     if (isSpecificPerson) {
-      doc.text(`V-Syncer Individual Weekly Timesheet & Notes — ${targetPersonName}`, 14, 15);
+      doc.setFontSize(14);
+      doc.text(`V-Syncer Comprehensive Weekly Timesheet & Shift Intelligence Dossier`, 14, 15);
       doc.setFontSize(10);
-      doc.text(`Employee: ${targetPersonName} | Range: ${weeklyStartDate} to ${endDateStr} (7 Days)`, 14, 22);
+      doc.text(`Employee: ${targetPersonName} | Period: ${weeklyStartDate} to ${endDateStr} (7 Full Days)`, 14, 22);
+
+      const totalHrs = weeklyDailyBreakdown.reduce((sum, d) => sum + Number(d.total_work_hours || 0), 0).toFixed(1);
+      const daysWorked = weeklyDailyBreakdown.filter(d => d.has_att).length;
+      const leaveDays = weeklyDailyBreakdown.filter(d => d.has_leave).length;
+      doc.text(`Summary Metrics -> Total Work Hours: ${totalHrs} hrs | Days Present: ${daysWorked}/7 | Leaves Logged: ${leaveDays}`, 14, 28);
 
       autoTable(doc, {
-        startY: 28,
-        head: [['Date', 'Day', 'Check In', 'Check Out', 'Hours', 'Break', 'Daily EOD Work Notes']],
+        startY: 34,
+        head: [['Date', 'Day', 'Attendance Status', 'Shift Timing (In - Out)', 'Hours', 'Break Details', 'Daily Work Notes / Remarks', 'Leave Details']],
         body: weeklyDailyBreakdown.map(d => [
           d.date,
           d.day_name,
-          d.check_in_time ? format(new Date(d.check_in_time), 'hh:mm a') : 'N/A',
-          d.check_out_time ? format(new Date(d.check_out_time), 'hh:mm a') : 'On Duty',
+          d.status.toUpperCase(),
+          d.shift_timing,
           `${d.total_work_hours} hrs`,
-          `${d.break_mins} mins`,
-          d.eod_notes
-        ])
+          d.break_summary,
+          d.eod_notes,
+          d.leave_details
+        ]),
+        styles: { fontSize: 8, cellPadding: 2.5 },
+        headStyles: { fillColor: [15, 76, 129] }
       });
     } else {
+      doc.setFontSize(14);
       doc.text(`V-Syncer Weekly Operations Summary (${weeklyStartDate} to ${endDateStr})`, 14, 15);
       doc.setFontSize(10);
-      doc.text(`Target Scope: All Staff Members | Period: 7 Days`, 14, 22);
+      doc.text(`Target Scope: All Active Personnel | Period: 7 Days`, 14, 22);
 
       autoTable(doc, {
         startY: 28,
-        head: [['Employee Name', 'Role', 'Days Present', 'Total Hours', 'Break Mins', 'Weekly Compiled EOD Notes']],
+        head: [['Employee Name', 'Role', 'Days Present', 'Leave Days', 'Total Hours', 'Break Mins', 'Weekly Compiled EOD Notes']],
         body: weeklyEmployeeReport.map(w => [
           w.employee_name,
           w.role,
           `${w.days_present} / 7 Days`,
+          `${w.leave_days || 0} Days`,
           `${w.total_work_hours} hrs`,
           `${w.total_break_mins} mins`,
           w.compiled_eod_notes
-        ])
+        ]),
+        styles: { fontSize: 8, cellPadding: 2.5 },
+        headStyles: { fillColor: [15, 76, 129] }
       });
     }
     return doc;
@@ -447,9 +583,9 @@ export default function ReportsPage() {
     const doc = buildWeeklyReportPDF();
     const endDt = addDays(parseISO(weeklyStartDate), 6);
     const targetName = weeklyEmployeeId === 'all' ? 'All_Staff' : (employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Staff').replace(/\s+/g, '_');
-    doc.save(`Weekly_Report_${weeklyStartDate}_to_${format(endDt, 'yyyy-MM-dd')}_${targetName}.pdf`);
+    doc.save(`Weekly_Comprehensive_Report_${weeklyStartDate}_to_${format(endDt, 'yyyy-MM-dd')}_${targetName}.pdf`);
     playSuccess();
-    toast.success('PDF Exported', 'Weekly report downloaded as PDF.');
+    toast.success('PDF Exported', 'Comprehensive weekly report downloaded as PDF.');
   };
 
   const exportWeeklyReportCSV = () => {
@@ -462,20 +598,23 @@ export default function ReportsPage() {
     if (isSpecificPerson) {
       csv = Papa.unparse(weeklyDailyBreakdown.map(d => ({
         EmployeeName: d.employee_name,
+        Role: d.role,
         Date: d.date,
         DayOfWeek: d.day_name,
-        CheckIn: d.check_in_time ? format(new Date(d.check_in_time), 'hh:mm:ss a') : 'N/A',
-        CheckOut: d.check_out_time ? format(new Date(d.check_out_time), 'hh:mm:ss a') : 'Active',
-        WorkHours: d.total_work_hours,
+        Status: d.status,
+        ShiftTiming: d.shift_timing,
+        HoursWorked: d.total_work_hours,
+        BreakDetails: d.break_summary,
         BreakMinutes: d.break_mins,
-        EODWorkNotes: d.eod_notes,
-        Status: d.status
+        WorkNotesAndRemarks: d.eod_notes,
+        LeaveDetails: d.leave_details
       })));
     } else {
       csv = Papa.unparse(weeklyEmployeeReport.map(w => ({
         EmployeeName: w.employee_name,
         Role: w.role,
         DaysPresent: w.days_present,
+        LeaveDays: w.leave_days || 0,
         TotalWorkHours: w.total_work_hours,
         TotalBreakMinutes: w.total_break_mins,
         CompiledEODNotes: w.compiled_eod_notes
@@ -486,10 +625,10 @@ export default function ReportsPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Weekly_Report_${weeklyStartDate}_to_${endDateStr}_${targetName}.csv`);
+    link.setAttribute('download', `Weekly_Comprehensive_Report_${weeklyStartDate}_to_${endDateStr}_${targetName}.csv`);
     link.click();
     playSuccess();
-    toast.success('CSV Exported', 'Weekly report downloaded as CSV.');
+    toast.success('CSV Exported', 'Comprehensive weekly report downloaded as CSV.');
   };
 
   const exportWeeklyReportWhatsApp = () => {
@@ -499,13 +638,17 @@ export default function ReportsPage() {
     const isSpecificPerson = weeklyEmployeeId !== 'all';
     const targetName = isSpecificPerson ? (employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Staff') : 'All Staff';
 
+    const totalHours = isSpecificPerson 
+      ? weeklyDailyBreakdown.reduce((sum, d) => sum + Number(d.total_work_hours || 0), 0).toFixed(1)
+      : weeklyEmployeeReport.reduce((sum, w) => sum + Number(w.total_work_hours || 0), 0).toFixed(1);
+
     const summaryLines = [
-      `📅 *Weekly Range:* ${weeklyStartDate} to ${endDateStr}`,
-      `👤 *Target Scope:* ${targetName}`,
-      `⏱️ *Total Work Hours:* ${weeklyEmployeeReport.reduce((sum, w) => sum + Number(w.total_work_hours || 0), 0).toFixed(1)} hrs`,
-      `📝 *Compiled EOD Notes:* Detailed day-by-day log attached in PDF`
+      `📅 *Weekly Period (7 Days):* ${weeklyStartDate} to ${endDateStr}`,
+      `👤 *Staff Target:* ${targetName}`,
+      `⏱️ *Total Shift Work Hours:* ${totalHours} hrs`,
+      `☕ *Break & Leave Logs:* Full day-by-day shift timing, break durations, leave records, and work notes attached in PDF report.`
     ];
-    transferReportToWhatsApp(whatsappNumber, `Weekly Report - ${targetName}`, summaryLines, doc);
+    transferReportToWhatsApp(whatsappNumber, `Weekly Comprehensive Report - ${targetName}`, summaryLines, doc);
   };
 
   // 3. Work Notes & EOD Intelligence Report (PDF & CSV)
@@ -918,6 +1061,11 @@ export default function ReportsPage() {
     ? null 
     : employees.find(e => e.id === weeklyEmployeeId)?.full_name || 'Staff Member';
 
+  const weeklySpecificTotalHours = weeklyDailyBreakdown.reduce((sum, d) => sum + Number(d.total_work_hours || 0), 0).toFixed(1);
+  const weeklySpecificDaysWorked = weeklyDailyBreakdown.filter(d => d.has_att).length;
+  const weeklySpecificLeaveDays = weeklyDailyBreakdown.filter(d => d.has_leave).length;
+  const weeklySpecificTotalBreaks = weeklyDailyBreakdown.reduce((sum, d) => sum + Number(d.break_mins || 0), 0);
+
   return (
     <div className="space-y-6 animate-fade-up">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -1070,7 +1218,7 @@ export default function ReportsPage() {
         </div>
       </NeuCard>
 
-      {/* DASHBOARD 2: Weekly Operational Staff Report & Specific Person Breakdown */}
+      {/* DASHBOARD 2: Comprehensive Weekly Operational Staff Report (Shift Timings, Breaks, Work Notes, Leaves) */}
       <NeuCard className="p-6 space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-neu-muted/10">
           <div>
@@ -1080,8 +1228,8 @@ export default function ReportsPage() {
             </h3>
             <p className="text-xs text-neu-muted">
               {selectedPersonName 
-                ? `Detailed 7-day day-by-day timesheet, work hours, breaks, and daily notes for ${selectedPersonName}.` 
-                : '7-day aggregated attendance, total work hours, break totals, and compiled EOD work notes for all staff.'}
+                ? `Detailed 7-day breakdown: shift timings (in-out), work hours, break sessions, daily work notes, and leave applications for ${selectedPersonName}.` 
+                : '7-day aggregated attendance, total work hours, break totals, leave records, and compiled EOD work notes for all staff.'}
             </p>
           </div>
           <div className="flex flex-wrap gap-2.5">
@@ -1105,13 +1253,13 @@ export default function ReportsPage() {
         {/* Weekly Filter Toolbar */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <NeuInput 
-            label="Week Start Date (7 Days Period)" 
+            label="Week Start Date (7 Days Window)" 
             type="date" 
             value={weeklyStartDate}
             onChange={(e) => setWeeklyStartDate(e.target.value)}
           />
           <NeuSelect 
-            label="Select Specific Person / All Staff" 
+            label="Select Specific Person / Team Summary" 
             options={[
               { label: 'All Personnel & Staff Members (Team Summary)', value: 'all' },
               ...employees.map(e => ({ label: `👤 ${e.full_name || 'Staff Member'} (${e.role || 'Staff'})`, value: e.id }))
@@ -1126,7 +1274,7 @@ export default function ReportsPage() {
               disabled={weeklyFilterLoading}
             >
               <Filter size={16} />
-              {weeklyFilterLoading ? 'Calculating...' : 'Generate Weekly Report'}
+              {weeklyFilterLoading ? 'Compiling Dossier...' : 'Generate 7-Day Report'}
             </NeuButton>
           </div>
           <div>
@@ -1139,16 +1287,38 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        {/* Weekly Report Preview: Specific Person Daily Breakdown vs Team Summary */}
+        {/* Weekly Executive Summary Bar for Specific Person */}
+        {selectedPersonName && !weeklyFilterLoading && weeklyDailyBreakdown.length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-neu-bg shadow-neu-inset-sm rounded-xl text-xs">
+            <div>
+              <span className="text-neu-muted block font-medium text-[11px]">Total Work Hours:</span>
+              <span className="text-neu-accent font-bold text-sm">{weeklySpecificTotalHours} hrs</span>
+            </div>
+            <div>
+              <span className="text-neu-muted block font-medium text-[11px]">Days Present / Shifts:</span>
+              <span className="text-emerald-600 font-bold text-sm">{weeklySpecificDaysWorked} / 7 Days</span>
+            </div>
+            <div>
+              <span className="text-neu-muted block font-medium text-[11px]">Leaves Applied:</span>
+              <span className="text-amber-600 font-bold text-sm">{weeklySpecificLeaveDays} Days</span>
+            </div>
+            <div>
+              <span className="text-neu-muted block font-medium text-[11px]">Total Break Duration:</span>
+              <span className="text-purple-600 font-bold text-sm">{weeklySpecificTotalBreaks} mins</span>
+            </div>
+          </div>
+        )}
+
+        {/* Weekly Report Preview: Specific Person 7-Day Breakdown vs Team Summary */}
         <div className="space-y-3">
           <h4 className="text-xs font-bold uppercase tracking-wider text-neu-muted">
-            {selectedPersonName ? `7-Day Daily Timesheet & Notes (${selectedPersonName})` : 'Weekly Team Performance Summary'}
+            {selectedPersonName ? `7-Day Day-by-Day Comprehensive Dossier (${selectedPersonName})` : 'Weekly Team Performance Summary'}
           </h4>
 
           {weeklyFilterLoading ? (
             <SkeletonCard className="h-36" />
           ) : weeklyEmployeeId !== 'all' ? (
-            /* Specific Person Day-by-Day View */
+            /* Specific Person Comprehensive 7-Day View */
             weeklyDailyBreakdown.length === 0 ? (
               <div className="p-8 text-center bg-neu-bg shadow-neu-inset-sm rounded-xl space-y-2">
                 <CalendarRange size={28} className="mx-auto text-neu-muted opacity-40" />
@@ -1156,36 +1326,57 @@ export default function ReportsPage() {
                 <p className="text-xs text-neu-muted">Try choosing another week start date.</p>
               </div>
             ) : (
-              <div className="space-y-3 max-h-80 overflow-y-auto scrollbar-hide">
+              <div className="space-y-3 max-h-96 overflow-y-auto scrollbar-hide">
                 {weeklyDailyBreakdown.map((d) => (
                   <div key={d.id} className="p-4 bg-neu-bg shadow-neu-inset-sm rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-3 text-xs">
-                    <div>
-                      <div className="flex items-center gap-2">
+                    <div className="space-y-1.5 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-sm text-neu-fg">{d.day_name}</span>
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-neu-bg shadow-neu-small text-neu-accent">
                           {d.date}
                         </span>
-                        <span className="text-[11px] text-emerald-600 font-bold">
-                          {d.total_work_hours} hrs worked
+                        
+                        {/* Status Badge */}
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                          d.has_att 
+                            ? 'bg-emerald-500/10 text-emerald-600' 
+                            : d.has_leave 
+                            ? 'bg-amber-500/10 text-amber-600' 
+                            : 'bg-slate-500/10 text-slate-500'
+                        }`}>
+                          {d.status}
                         </span>
-                        <span className="text-[11px] text-amber-600 font-medium">
-                          ({d.break_mins} mins break)
+
+                        <span className="text-[11px] text-emerald-600 font-bold">
+                          ⏱️ {d.total_work_hours} hrs
+                        </span>
+
+                        <span className="text-[11px] text-amber-600 font-medium flex items-center gap-1">
+                          <Coffee size={12} /> {d.break_summary}
                         </span>
                       </div>
-                      <div className="mt-2 p-2 bg-neu-bg shadow-neu-inset-xs rounded-lg text-neu-fg font-medium text-xs max-w-2xl flex items-start gap-1.5">
+
+                      {/* Work Notes / Remarks */}
+                      <div className="p-2.5 bg-neu-bg shadow-neu-inset-xs rounded-lg text-neu-fg font-medium text-xs max-w-2xl flex items-start gap-2">
                         <NotebookTabs size={14} className="text-neu-accent shrink-0 mt-0.5" />
                         <div>
-                          <strong className="text-neu-accent text-[10px] uppercase tracking-wider block">Daily Work Notes:</strong>
+                          <strong className="text-neu-accent text-[10px] uppercase tracking-wider block">Daily Work Notes / EOD Remarks:</strong>
                           <span>{d.eod_notes}</span>
                         </div>
                       </div>
+
+                      {/* Leave Notice if applicable */}
+                      {d.has_leave && (
+                        <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-700 text-xs flex items-center gap-2">
+                          <AlertCircle size={14} className="shrink-0 text-amber-600" />
+                          <span><strong>Leave Information:</strong> {d.leave_details}</span>
+                        </div>
+                      )}
                     </div>
+
                     <div className="text-right shrink-0">
                       <p className="font-bold text-neu-accent text-xs">
-                        In: {d.check_in_time ? format(new Date(d.check_in_time), 'hh:mm a') : 'N/A'}
-                      </p>
-                      <p className="text-xs text-neu-muted mt-0.5">
-                        Out: {d.check_out_time ? format(new Date(d.check_out_time), 'hh:mm a') : 'Active Shift'}
+                        Shift: {d.shift_timing}
                       </p>
                     </div>
                   </div>
@@ -1212,9 +1403,10 @@ export default function ReportsPage() {
                         </span>
                       </div>
                       <div className="flex gap-4 font-bold text-xs">
-                        <span>Days Present: <strong className="text-emerald-600">{w.days_present} / 7</strong></span>
+                        <span>Days Worked: <strong className="text-emerald-600">{w.days_present} / 7</strong></span>
+                        <span>Leaves: <strong className="text-amber-600">{w.leave_days || 0}</strong></span>
                         <span>Total Work: <strong className="text-neu-accent">{w.total_work_hours} hrs</strong></span>
-                        <span>Total Breaks: <strong className="text-amber-600">{w.total_break_mins} mins</strong></span>
+                        <span>Total Breaks: <strong className="text-purple-600">{w.total_break_mins} mins</strong></span>
                       </div>
                     </div>
                     <p className="text-xs text-neu-muted font-medium bg-neu-bg shadow-neu-inset-xs p-2.5 rounded-lg">
