@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { NeuCard } from '@/components/neu/NeuCard';
 import { NeuButton } from '@/components/neu/NeuButton';
@@ -21,7 +21,6 @@ export default function ReportsPage() {
   const supabase = createClient();
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState<any[]>([]);
-  const [profilesMap, setProfilesMap] = useState<Map<string, any>>(new Map());
 
   // Target WhatsApp Number
   const [whatsappNumber, setWhatsappNumber] = useState('9597513372');
@@ -104,16 +103,20 @@ export default function ReportsPage() {
     toast.success('Dispatched to WhatsApp', `Report transferred directly to +91 ${cleanNum}.`);
   };
 
-  // Fetch Daily Report & EOD Notes
-  const executeDailyReportFilter = useCallback(async (dateToFetch: string, empIdToFetch: string) => {
+  // Standalone Daily Report Fetcher
+  const fetchDailyReport = async (dateToFetch: string, empIdToFetch: string) => {
     setDailyFilterLoading(true);
     try {
+      const { data: profs } = await supabase.from('profiles').select('id, full_name, role').eq('is_active', true);
+      const pMap = new Map<string, any>();
+      (profs || []).forEach(p => { if (p.id) pMap.set(p.id, p); });
+
       let query = supabase
         .from('attendance_records')
         .select('*, break_records(*)')
         .eq('date', dateToFetch);
 
-      if (empIdToFetch !== 'all') {
+      if (empIdToFetch && empIdToFetch !== 'all') {
         query = query.eq('user_id', empIdToFetch);
       }
 
@@ -121,7 +124,7 @@ export default function ReportsPage() {
       if (error) throw error;
 
       const formatted = (data || []).map(r => {
-        const staffObj = profilesMap.get(r.user_id);
+        const staffObj = pMap.get(r.user_id);
         const staffName = staffObj?.full_name || 'Staff Member';
         const staffRole = staffObj?.role || 'Executive';
 
@@ -156,35 +159,39 @@ export default function ReportsPage() {
     } finally {
       setDailyFilterLoading(false);
     }
-  }, [supabase, profilesMap]);
+  };
 
-  // Fetch Comprehensive Weekly Operational Staff Report (Shift Timings, Work Notes, Leave, Breaks, Day-by-Day)
-  const executeWeeklyReportFilter = useCallback(async (startDateStr: string, empIdToFetch: string) => {
+  // Standalone Weekly Report Fetcher
+  const fetchWeeklyReport = async (startDateStr: string, empIdToFetch: string) => {
     setWeeklyFilterLoading(true);
     try {
+      const { data: profs } = await supabase.from('profiles').select('id, full_name, role').eq('is_active', true);
+      const pMap = new Map<string, any>();
+      (profs || []).forEach(p => { if (p.id) pMap.set(p.id, p); });
+
       const startDt = parseISO(startDateStr);
       const endDt = addDays(startDt, 6);
       const endDateStr = format(endDt, 'yyyy-MM-dd');
 
-      // 1. Fetch Attendance Records with Breaks in this 7-day period
+      // 1. Fetch Attendance Records with Breaks
       let attQuery = supabase
         .from('attendance_records')
         .select('*, break_records(*)')
         .gte('date', startDateStr)
         .lte('date', endDateStr);
 
-      if (empIdToFetch !== 'all') {
+      if (empIdToFetch && empIdToFetch !== 'all') {
         attQuery = attQuery.eq('user_id', empIdToFetch);
       }
 
-      // 2. Fetch Leave Applications in this 7-day period
+      // 2. Fetch Leave Applications
       let leaveQuery = supabase
         .from('leave_requests')
         .select('*')
         .lte('start_date', endDateStr)
         .gte('end_date', startDateStr);
 
-      if (empIdToFetch !== 'all') {
+      if (empIdToFetch && empIdToFetch !== 'all') {
         leaveQuery = leaveQuery.eq('user_id', empIdToFetch);
       }
 
@@ -198,9 +205,8 @@ export default function ReportsPage() {
       const empGroupMap = new Map<string, any>();
       const dailyBreakdownList: any[] = [];
 
-      // If a specific person is selected, build all 7 calendar days sequentially
-      if (empIdToFetch !== 'all') {
-        const staffObj = profilesMap.get(empIdToFetch);
+      if (empIdToFetch && empIdToFetch !== 'all') {
+        const staffObj = pMap.get(empIdToFetch);
         const empName = staffObj?.full_name || 'Staff Member';
         const empRole = staffObj?.role || 'Executive';
 
@@ -215,10 +221,7 @@ export default function ReportsPage() {
           const currentDayStr = format(currentDayDt, 'yyyy-MM-dd');
           const dayOfWeek = format(currentDayDt, 'EEEE');
 
-          // Find attendance record for this day
           const dayAtt = (attData || []).find(a => a.date === currentDayStr);
-          
-          // Find leave request covering this day
           const dayLeave = (leavesData || []).find(l => {
             const sDate = l.start_date ? l.start_date.substring(0, 10) : '';
             const eDate = l.end_date ? l.end_date.substring(0, 10) : sDate;
@@ -299,10 +302,9 @@ export default function ReportsPage() {
           compiled_eod_notes: compiledNotesList.length > 0 ? compiledNotesList.join(' | ') : 'Regular Weekly Shift Logs'
         });
       } else {
-        // Team Summary Mode: Aggregate across all active staff
         (attData || []).forEach(r => {
           const userId = r.user_id || 'unknown';
-          const staffObj = profilesMap.get(userId);
+          const staffObj = pMap.get(userId);
           const empName = staffObj?.full_name || 'Staff Member';
           const empRole = staffObj?.role || 'Executive';
           const eodNote = r.notes || r.checkout_notes || r.remarks || 'Standard Shift Completed on Schedule';
@@ -331,7 +333,6 @@ export default function ReportsPage() {
           if (eodNote) group.eod_notes_list.push(`${r.date}: ${eodNote}`);
         });
 
-        // Add leave counts to team summary
         (leavesData || []).forEach(l => {
           if (empGroupMap.has(l.user_id)) {
             empGroupMap.get(l.user_id).leave_days += 1;
@@ -354,9 +355,9 @@ export default function ReportsPage() {
     } finally {
       setWeeklyFilterLoading(false);
     }
-  }, [supabase, profilesMap]);
+  };
 
-  const fetchInitialData = useCallback(async () => {
+  const fetchInitialData = async () => {
     try {
       const { data: profs } = await supabase
         .from('profiles')
@@ -364,12 +365,13 @@ export default function ReportsPage() {
         .eq('is_active', true)
         .order('full_name', { ascending: true });
 
-      setEmployees(profs || []);
+      const activeEmployees = profs || [];
+      setEmployees(activeEmployees);
+      
       const pMap = new Map<string, any>();
-      (profs || []).forEach(p => {
+      activeEmployees.forEach(p => {
         if (p.id) pMap.set(p.id, p);
       });
-      setProfilesMap(pMap);
 
       const [
         { data: att, count: attCnt },
@@ -413,29 +415,20 @@ export default function ReportsPage() {
       setExecLocationsCount(locCnt || 0);
       setGoalsCount(goalsCnt || (goals?.length || 0));
 
-      executeDailyReportFilter(selectedDate, selectedEmployeeId);
-      executeWeeklyReportFilter(weeklyStartDate, weeklyEmployeeId);
+      // Initial sub-reports fetch
+      fetchDailyReport(selectedDate, selectedEmployeeId);
+      fetchWeeklyReport(weeklyStartDate, weeklyEmployeeId);
     } catch (err) {
       console.error('Error fetching report metrics:', err);
     } finally {
       setLoading(false);
     }
-  }, [supabase, selectedDate, selectedEmployeeId, weeklyStartDate, weeklyEmployeeId, executeDailyReportFilter, executeWeeklyReportFilter]);
+  };
 
-  // 1. Automatically fetch Daily Report whenever Date or Employee selection changes
-  useEffect(() => {
-    executeDailyReportFilter(selectedDate, selectedEmployeeId);
-  }, [selectedDate, selectedEmployeeId, executeDailyReportFilter]);
-
-  // 2. Automatically fetch Weekly Report whenever Week Start Date or Employee selection changes
-  useEffect(() => {
-    executeWeeklyReportFilter(weeklyStartDate, weeklyEmployeeId);
-  }, [weeklyStartDate, weeklyEmployeeId, executeWeeklyReportFilter]);
-
+  // Run on Mount Only: load initial data & attach realtime listeners
   useEffect(() => {
     fetchInitialData();
 
-    // Supabase Realtime listeners to keep GM portal reports live
     const reportsChannel = supabase
       .channel('realtime_reports_sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records' }, () => {
@@ -455,7 +448,8 @@ export default function ReportsPage() {
     return () => {
       supabase.removeChannel(reportsChannel);
     };
-  }, [supabase, fetchInitialData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 1. Daily Report PDF & CSV
   const buildDailyReportPDF = () => {
@@ -1086,7 +1080,11 @@ export default function ReportsPage() {
 
         <div className="flex items-center gap-3">
           <button
-            onClick={() => fetchInitialData()}
+            onClick={() => {
+              fetchInitialData();
+              playSuccess();
+              toast.success('Refreshed', 'All report feeds reloaded.');
+            }}
             className="p-2 rounded-xl bg-neu-bg shadow-neu-small hover:shadow-neu-lifted active:shadow-neu-inset text-neu-accent transition-all cursor-pointer"
             title="Refresh All Reports"
           >
@@ -1153,7 +1151,11 @@ export default function ReportsPage() {
             label="Select Report Date" 
             type="date" 
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
+            onChange={(e) => {
+              const newDate = e.target.value;
+              setSelectedDate(newDate);
+              fetchDailyReport(newDate, selectedEmployeeId);
+            }}
           />
           <NeuSelect 
             label="Select Specific Staff Member" 
@@ -1162,11 +1164,19 @@ export default function ReportsPage() {
               ...employees.map(e => ({ label: `${e.full_name || 'Staff Member'} (${e.role || 'Staff'})`, value: e.id }))
             ]}
             value={selectedEmployeeId}
-            onChange={(e) => setSelectedEmployeeId(e.target.value)}
+            onChange={(e) => {
+              const newEmp = e.target.value;
+              setSelectedEmployeeId(newEmp);
+              fetchDailyReport(selectedDate, newEmp);
+            }}
           />
           <div>
             <NeuButton 
-              onClick={() => executeDailyReportFilter(selectedDate, selectedEmployeeId)}
+              onClick={() => {
+                fetchDailyReport(selectedDate, selectedEmployeeId);
+                playSuccess();
+                toast.success('Filters Applied', `Loaded daily logs for ${selectedDate}`);
+              }}
               className="w-full"
               disabled={dailyFilterLoading}
             >
@@ -1266,7 +1276,11 @@ export default function ReportsPage() {
             label="Week Start Date (7 Days Window)" 
             type="date" 
             value={weeklyStartDate}
-            onChange={(e) => setWeeklyStartDate(e.target.value)}
+            onChange={(e) => {
+              const newStart = e.target.value;
+              setWeeklyStartDate(newStart);
+              fetchWeeklyReport(newStart, weeklyEmployeeId);
+            }}
           />
           <NeuSelect 
             label="Select Specific Person / Team Summary" 
@@ -1275,11 +1289,19 @@ export default function ReportsPage() {
               ...employees.map(e => ({ label: `👤 ${e.full_name || 'Staff Member'} (${e.role || 'Staff'})`, value: e.id }))
             ]}
             value={weeklyEmployeeId}
-            onChange={(e) => setWeeklyEmployeeId(e.target.value)}
+            onChange={(e) => {
+              const newEmp = e.target.value;
+              setWeeklyEmployeeId(newEmp);
+              fetchWeeklyReport(weeklyStartDate, newEmp);
+            }}
           />
           <div>
             <NeuButton 
-              onClick={() => executeWeeklyReportFilter(weeklyStartDate, weeklyEmployeeId)}
+              onClick={() => {
+                fetchWeeklyReport(weeklyStartDate, weeklyEmployeeId);
+                playSuccess();
+                toast.success('Weekly Report Compiled', `Loaded 7-day dossier starting ${weeklyStartDate}`);
+              }}
               className="w-full"
               disabled={weeklyFilterLoading}
             >
