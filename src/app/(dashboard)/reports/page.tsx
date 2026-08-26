@@ -8,7 +8,7 @@ import { NeuInput } from '@/components/neu/NeuInput';
 import { NeuSelect } from '@/components/neu/NeuSelect';
 import { StatCard } from '@/components/neu/StatCard';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2 } from 'lucide-react';
+import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
@@ -21,6 +21,9 @@ export default function ReportsPage() {
   const supabase = createClient();
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState<any[]>([]);
+
+  // Target WhatsApp Number
+  const [whatsappNumber, setWhatsappNumber] = useState('9597513372');
 
   // Metric Counts
   const [attendanceCount, setAttendanceCount] = useState(0);
@@ -53,6 +56,32 @@ export default function ReportsPage() {
   const [manualReportDate, setManualReportDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [manualReportNotes, setManualReportNotes] = useState('');
   const [manualReports, setManualReports] = useState<any[]>([]);
+
+  // Helper function to transfer report via WhatsApp
+  const transferReportToWhatsApp = (targetPhone: string, title: string, summaryLines: string[], doc?: any) => {
+    if (doc) {
+      doc.save(`${title.replace(/\s+/g, '_')}.pdf`);
+    }
+
+    const cleanNum = targetPhone.replace(/\D/g, '');
+    const phoneWithCountry = cleanNum.startsWith('91') ? cleanNum : `91${cleanNum}`;
+
+    const text = [
+      `📊 *V-SYNCER EXECUTIVE OPERATIONS & ATTENDANCE REPORT*`,
+      `📄 *Document:* ${title}`,
+      `📅 *Date:* ${format(new Date(), 'yyyy-MM-dd HH:mm')}`,
+      `-----------------------------------------`,
+      ...summaryLines,
+      `-----------------------------------------`,
+      `✅ *Verified by V-Syncer Manager Portal*`,
+      `📎 *PDF Report Downloaded & Ready to Attach!*`
+    ].join('\n');
+
+    const waUrl = `https://api.whatsapp.com/send?phone=${phoneWithCountry}&text=${encodeURIComponent(text)}`;
+    window.open(waUrl, '_blank');
+    playSuccess();
+    toast.success('WhatsApp Dispatch Triggered', `PDF downloaded. Opening WhatsApp for +91 ${targetPhone}...`);
+  };
 
   // Fetch Daily Report & EOD Notes
   const executeDailyReportFilter = async (dateToFetch: string, empIdToFetch: string) => {
@@ -220,8 +249,8 @@ export default function ReportsPage() {
     fetchInitialData();
   }, [supabase]);
 
-  // Export PDF & CSV for Daily Report
-  const exportDailyReportPDF = () => {
+  // Generate Daily PDF Doc
+  const buildDailyReportPDF = () => {
     const doc = new jsPDF();
     const empName = selectedEmployeeId === 'all' 
       ? 'All Personnel' 
@@ -244,7 +273,68 @@ export default function ReportsPage() {
         r.eod_notes || 'Standard Shift Completed'
       ])
     });
-    doc.save(`Daily_EOD_Report_${selectedDate}_${empName.replace(/\s+/g, '_')}.pdf`);
+    return doc;
+  };
+
+  const exportDailyReportPDF = () => {
+    const doc = buildDailyReportPDF();
+    const empName = selectedEmployeeId === 'all' ? 'All_Personnel' : 'Staff';
+    doc.save(`Daily_EOD_Report_${selectedDate}_${empName}.pdf`);
+  };
+
+  const exportDailyReportWhatsApp = () => {
+    const doc = buildDailyReportPDF();
+    const summaryLines = [
+      `📅 *Report Date:* ${selectedDate}`,
+      `👥 *Total Staff Logs:* ${dailyEmployeeReport.length} records`,
+      `📝 *Latest EOD Notes:* ${dailyEmployeeReport.slice(0, 3).map(r => `${r.profiles?.full_name || 'Staff'}: ${r.eod_notes}`).join(' | ')}`
+    ];
+    transferReportToWhatsApp(whatsappNumber, `Daily EOD Report (${selectedDate})`, summaryLines, doc);
+  };
+
+  // Generate Weekly PDF Doc
+  const buildWeeklyReportPDF = () => {
+    const doc = new jsPDF();
+    const endDt = addDays(parseISO(weeklyStartDate), 6);
+    const endDateStr = format(endDt, 'yyyy-MM-dd');
+    
+    doc.text(`V-Syncer Weekly Operations Report (${weeklyStartDate} to ${endDateStr})`, 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Target Scope: All Staff | Period: 7 Days`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Employee Name', 'Role', 'Days Present', 'Total Hours', 'Break Mins', 'Weekly Compiled EOD Notes']],
+      body: weeklyEmployeeReport.map(w => [
+        w.employee_name,
+        w.role,
+        `${w.days_present} / 7 Days`,
+        `${w.total_work_hours} hrs`,
+        `${w.total_break_mins} mins`,
+        w.compiled_eod_notes
+      ])
+    });
+    return doc;
+  };
+
+  const exportWeeklyReportPDF = () => {
+    const doc = buildWeeklyReportPDF();
+    const endDt = addDays(parseISO(weeklyStartDate), 6);
+    doc.save(`Weekly_Report_${weeklyStartDate}_to_${format(endDt, 'yyyy-MM-dd')}.pdf`);
+  };
+
+  const exportWeeklyReportWhatsApp = () => {
+    const doc = buildWeeklyReportPDF();
+    const endDt = addDays(parseISO(weeklyStartDate), 6);
+    const endDateStr = format(endDt, 'yyyy-MM-dd');
+
+    const summaryLines = [
+      `📅 *Weekly Range:* ${weeklyStartDate} to ${endDateStr}`,
+      `👥 *Total Active Staff:* ${weeklyEmployeeReport.length} members`,
+      `⏱️ *Total Work Hours:* ${weeklyEmployeeReport.reduce((sum, w) => sum + Number(w.total_work_hours || 0), 0).toFixed(1)} hrs`,
+      `📝 *Compiled EOD Notes:* Available in attached PDF`
+    ];
+    transferReportToWhatsApp(whatsappNumber, `Weekly Operations Report (${weeklyStartDate})`, summaryLines, doc);
   };
 
   const exportDailyReportCSV = () => {
@@ -270,31 +360,6 @@ export default function ReportsPage() {
     link.setAttribute('href', url);
     link.setAttribute('download', `Daily_EOD_Report_${selectedDate}_${empName}.csv`);
     link.click();
-  };
-
-  // Export PDF & CSV for Weekly Report
-  const exportWeeklyReportPDF = () => {
-    const doc = new jsPDF();
-    const endDt = addDays(parseISO(weeklyStartDate), 6);
-    const endDateStr = format(endDt, 'yyyy-MM-dd');
-    
-    doc.text(`V-Syncer Weekly Operations Report (${weeklyStartDate} to ${endDateStr})`, 14, 15);
-    doc.setFontSize(10);
-    doc.text(`Target Scope: All Staff | Period: 7 Days`, 14, 22);
-
-    autoTable(doc, {
-      startY: 28,
-      head: [['Employee Name', 'Role', 'Days Present', 'Total Hours', 'Break Mins', 'Weekly Compiled EOD Notes']],
-      body: weeklyEmployeeReport.map(w => [
-        w.employee_name,
-        w.role,
-        `${w.days_present} / 7 Days`,
-        `${w.total_work_hours} hrs`,
-        `${w.total_break_mins} mins`,
-        w.compiled_eod_notes
-      ])
-    });
-    doc.save(`Weekly_Report_${weeklyStartDate}_to_${endDateStr}.pdf`);
   };
 
   const exportWeeklyReportCSV = () => {
@@ -407,28 +472,6 @@ export default function ReportsPage() {
     }
   };
 
-  const exportCustomManualPDF = (report: any) => {
-    const doc = new jsPDF();
-    doc.text(`V-Syncer Executive Report — ${report.title}`, 14, 15);
-    doc.setFontSize(10);
-    doc.text(`Report Type: ${report.type} | Target Staff: ${report.staff_name} | Date: ${report.date}`, 14, 22);
-
-    autoTable(doc, {
-      startY: 28,
-      head: [['Attribute / Parameter', 'Details / Compliance Summary']],
-      body: [
-        ['Report Title', report.title],
-        ['Report Classification', report.type],
-        ['Assigned Staff Member', report.staff_name],
-        ['Report Date', report.date],
-        ['Executive Notes & Directives', report.notes || 'No special notes provided.'],
-        ['Generation Timestamp', new Date().toLocaleString()],
-        ['System Verification', 'Verified & Signed by V-Syncer Manager']
-      ]
-    });
-    doc.save(`Executive_Report_${report.title.replace(/\s+/g, '_')}.pdf`);
-  };
-
   if (loading) {
     return (
       <div className="space-y-6">
@@ -443,9 +486,27 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6 animate-fade-up">
-      <div>
-        <h2 className="text-xl font-display font-bold text-neu-fg">Executive Reports & Analytics</h2>
-        <p className="text-neu-muted text-sm">Generate and export real operational intelligence & EOD notes synced from attendance logs.</p>
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h2 className="text-xl font-display font-bold text-neu-fg">Executive Reports & Analytics</h2>
+          <p className="text-neu-muted text-sm">Generate and export real operational intelligence & EOD notes synced from attendance logs.</p>
+        </div>
+
+        {/* Target WhatsApp Config Bar */}
+        <div className="flex items-center gap-2 bg-neu-bg shadow-neu-raised p-2 rounded-2xl border border-emerald-500/20">
+          <div className="p-2 bg-emerald-500 text-white rounded-xl">
+            <MessageSquare size={16} />
+          </div>
+          <div>
+            <span className="text-[10px] font-bold text-neu-muted uppercase tracking-wider block">Target WhatsApp Number:</span>
+            <input 
+              type="text" 
+              value={whatsappNumber}
+              onChange={(e) => setWhatsappNumber(e.target.value)}
+              className="bg-transparent text-xs font-mono font-bold text-emerald-600 focus:outline-none w-28"
+            />
+          </div>
+        </div>
       </div>
 
       {/* Summary KPI Cards */}
@@ -466,7 +527,15 @@ export default function ReportsPage() {
             </h3>
             <p className="text-xs text-neu-muted">Staff check-ins, check-outs, break timings, and EOD work notes submitted to manager.</p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-2.5">
+            <button 
+              onClick={exportDailyReportWhatsApp}
+              disabled={dailyEmployeeReport.length === 0}
+              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 shadow-neu-raised transition-all disabled:opacity-40 cursor-pointer"
+            >
+              <Send size={14} />
+              Send PDF to WhatsApp (+91 {whatsappNumber})
+            </button>
             <NeuButton onClick={exportDailyReportPDF} disabled={dailyEmployeeReport.length === 0}>
               <FileText size={16} /> PDF Daily EOD Report
             </NeuButton>
@@ -567,7 +636,15 @@ export default function ReportsPage() {
             </h3>
             <p className="text-xs text-neu-muted">7-day aggregated attendance, total work hours, break totals, and compiled EOD work notes.</p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-2.5">
+            <button 
+              onClick={exportWeeklyReportWhatsApp}
+              disabled={weeklyEmployeeReport.length === 0}
+              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 shadow-neu-raised transition-all disabled:opacity-40 cursor-pointer"
+            >
+              <Send size={14} />
+              Send Weekly PDF to WhatsApp (+91 {whatsappNumber})
+            </button>
             <NeuButton onClick={exportWeeklyReportPDF} disabled={weeklyEmployeeReport.length === 0}>
               <FileText size={16} /> PDF Weekly Report
             </NeuButton>
@@ -689,7 +766,10 @@ export default function ReportsPage() {
                     {mr.notes && <p className="text-xs text-neu-muted mt-1 bg-neu-bg shadow-neu-inset-xs px-2.5 py-1 rounded-lg max-w-xl">{mr.notes}</p>}
                   </div>
                   <div className="flex items-center gap-2">
-                    <NeuButton onClick={() => exportCustomManualPDF(mr)} variant="secondary" className="text-xs">
+                    <NeuButton onClick={() => transferReportToWhatsApp(whatsappNumber, mr.title, [`Staff: ${mr.staff_name}`, `Date: ${mr.date}`, `Notes: ${mr.notes || 'N/A'}`])} variant="secondary" className="text-xs text-emerald-600 font-bold">
+                      <Send size={14} /> WhatsApp
+                    </NeuButton>
+                    <NeuButton onClick={() => buildDailyReportPDF().save(`${mr.title.replace(/\s+/g, '_')}.pdf`)} variant="secondary" className="text-xs">
                       <Download size={14} /> PDF
                     </NeuButton>
                     <NeuButton onClick={() => handleOpenEditModal(mr)} variant="secondary" className="p-2.5">
