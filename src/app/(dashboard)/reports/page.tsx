@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { NeuCard } from '@/components/neu/NeuCard';
 import { NeuButton } from '@/components/neu/NeuButton';
@@ -8,7 +8,7 @@ import { NeuInput } from '@/components/neu/NeuInput';
 import { NeuSelect } from '@/components/neu/NeuSelect';
 import { StatCard } from '@/components/neu/StatCard';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
-import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck, Target, NotebookTabs } from 'lucide-react';
+import { BarChart, Download, FileText, Users, Clock, CheckCircle, Calendar, UserCheck, Filter, CalendarRange, Plus, Trash2, Edit, CheckCircle2, MessageSquare, Send, ShieldCheck, Target, NotebookTabs, RefreshCw } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
@@ -99,7 +99,7 @@ export default function ReportsPage() {
   };
 
   // Fetch Daily Report & EOD Notes
-  const executeDailyReportFilter = async (dateToFetch: string, empIdToFetch: string) => {
+  const executeDailyReportFilter = useCallback(async (dateToFetch: string, empIdToFetch: string) => {
     setDailyFilterLoading(true);
     try {
       let query = supabase
@@ -144,10 +144,10 @@ export default function ReportsPage() {
     } finally {
       setDailyFilterLoading(false);
     }
-  };
+  }, [supabase]);
 
   // Fetch Weekly Operational Staff Report & Specific Person Breakdown
-  const executeWeeklyReportFilter = async (startDateStr: string, empIdToFetch: string) => {
+  const executeWeeklyReportFilter = useCallback(async (startDateStr: string, empIdToFetch: string) => {
     setWeeklyFilterLoading(true);
     try {
       const startDt = parseISO(startDateStr);
@@ -167,7 +167,6 @@ export default function ReportsPage() {
       const { data, error } = await query.order('date', { ascending: true });
       if (error) throw error;
 
-      // Group records by Employee
       const empGroupMap = new Map<string, any>();
       const dailyBreakdownList: any[] = [];
 
@@ -199,7 +198,6 @@ export default function ReportsPage() {
         group.total_break_mins += breakMins;
         if (eodNote) group.eod_notes_list.push(`${r.date}: ${eodNote}`);
 
-        // Build individual day log
         dailyBreakdownList.push({
           id: r.id,
           user_id: userId,
@@ -230,57 +228,72 @@ export default function ReportsPage() {
     } finally {
       setWeeklyFilterLoading(false);
     }
-  };
+  }, [supabase]);
+
+  const fetchInitialData = useCallback(async () => {
+    try {
+      const { data: profs } = await supabase
+        .from('profiles')
+        .select('id, full_name, role')
+        .order('full_name', { ascending: true });
+
+      setEmployees(profs || []);
+
+      const [
+        { data: att, count: attCnt },
+        { data: lve, count: lveCnt },
+        { data: aud, count: audCnt },
+        { count: locCnt },
+        { data: manualRpts },
+        { data: goals, count: goalsCnt }
+      ] = await Promise.all([
+        supabase.from('attendance_records').select('*, profiles!attendance_records_user_id_fkey(full_name, role)').order('date', { ascending: false }),
+        supabase.from('leave_requests').select('*, profiles(full_name)').order('created_at', { ascending: false }),
+        supabase.from('audit_logs').select('*').order('created_at', { ascending: false }),
+        supabase.from('exec_locations').select('id', { count: 'exact', head: true }),
+        supabase.from('manual_reports').select('*').order('created_at', { ascending: false }),
+        supabase.from('employee_goals').select('*').order('created_at', { ascending: false })
+      ]);
+
+      setAttendanceData(att || []);
+      setLeaveData(lve || []);
+      setAuditData(aud || []);
+      setManualReports(manualRpts || []);
+      setGoalsData(goals || []);
+
+      setAttendanceCount(attCnt || (att?.length || 0));
+      setLeaveCount(lveCnt || (lve?.length || 0));
+      setAuditLogCount(audCnt || (aud?.length || 0));
+      setExecLocationsCount(locCnt || 0);
+      setGoalsCount(goalsCnt || (goals?.length || 0));
+
+      executeDailyReportFilter(selectedDate, selectedEmployeeId);
+      executeWeeklyReportFilter(weeklyStartDate, weeklyEmployeeId);
+    } catch (err) {
+      console.error('Error fetching report metrics:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [supabase, selectedDate, selectedEmployeeId, weeklyStartDate, weeklyEmployeeId, executeDailyReportFilter, executeWeeklyReportFilter]);
 
   useEffect(() => {
-    async function fetchInitialData() {
-      setLoading(true);
-      try {
-        const { data: profs } = await supabase
-          .from('profiles')
-          .select('id, full_name, role')
-          .order('full_name', { ascending: true });
-
-        setEmployees(profs || []);
-
-        const [
-          { data: att, count: attCnt },
-          { data: lve, count: lveCnt },
-          { data: aud, count: audCnt },
-          { count: locCnt },
-          { data: manualRpts },
-          { data: goals, count: goalsCnt }
-        ] = await Promise.all([
-          supabase.from('attendance_records').select('*, profiles!attendance_records_user_id_fkey(full_name, role)').order('date', { ascending: false }),
-          supabase.from('leave_requests').select('*, profiles(full_name)').order('created_at', { ascending: false }),
-          supabase.from('audit_logs').select('*').order('created_at', { ascending: false }),
-          supabase.from('exec_locations').select('id', { count: 'exact', head: true }),
-          supabase.from('manual_reports').select('*').order('created_at', { ascending: false }),
-          supabase.from('employee_goals').select('*').order('created_at', { ascending: false })
-        ]);
-
-        setAttendanceData(att || []);
-        setLeaveData(lve || []);
-        setAuditData(aud || []);
-        setManualReports(manualRpts || []);
-        setGoalsData(goals || []);
-
-        setAttendanceCount(attCnt || (att?.length || 0));
-        setLeaveCount(lveCnt || (lve?.length || 0));
-        setAuditLogCount(audCnt || (aud?.length || 0));
-        setExecLocationsCount(locCnt || 0);
-        setGoalsCount(goalsCnt || (goals?.length || 0));
-
-        executeDailyReportFilter(format(new Date(), 'yyyy-MM-dd'), 'all');
-        executeWeeklyReportFilter(format(subDays(new Date(), 6), 'yyyy-MM-dd'), 'all');
-      } catch (err) {
-        console.error('Error fetching report metrics:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
     fetchInitialData();
-  }, [supabase]);
+
+    // Supabase Realtime listeners to keep GM portal reports live
+    const reportsChannel = supabase
+      .channel('realtime_reports_sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records' }, () => {
+        fetchInitialData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'manual_reports' }, () => {
+        fetchInitialData();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(reportsChannel);
+    };
+  }, [supabase, fetchInitialData]);
 
   // 1. Daily Report PDF & CSV
   const buildDailyReportPDF = () => {
@@ -841,19 +854,29 @@ export default function ReportsPage() {
           <p className="text-neu-muted text-sm">Download full operational reports, staff work notes, weekly individual summaries, and target metrics in PDF & CSV.</p>
         </div>
 
-        {/* Target WhatsApp Config Bar */}
-        <div className="flex items-center gap-2 bg-neu-bg shadow-neu-raised p-2 rounded-2xl border border-emerald-500/20">
-          <div className="p-2 bg-emerald-500 text-white rounded-xl">
-            <MessageSquare size={16} />
-          </div>
-          <div>
-            <span className="text-[10px] font-bold text-neu-muted uppercase tracking-wider block">Target WhatsApp Number:</span>
-            <input 
-              type="text" 
-              value={whatsappNumber}
-              onChange={(e) => setWhatsappNumber(e.target.value)}
-              className="bg-transparent text-xs font-mono font-bold text-emerald-600 focus:outline-none w-28"
-            />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => fetchInitialData()}
+            className="p-2 rounded-xl bg-neu-bg shadow-neu-small hover:shadow-neu-lifted active:shadow-neu-inset text-neu-accent transition-all cursor-pointer"
+            title="Refresh All Reports"
+          >
+            <RefreshCw size={16} />
+          </button>
+
+          {/* Target WhatsApp Config Bar */}
+          <div className="flex items-center gap-2 bg-neu-bg shadow-neu-raised p-2 rounded-2xl border border-emerald-500/20">
+            <div className="p-2 bg-emerald-500 text-white rounded-xl">
+              <MessageSquare size={16} />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold text-neu-muted uppercase tracking-wider block">Target WhatsApp Number:</span>
+              <input 
+                type="text" 
+                value={whatsappNumber}
+                onChange={(e) => setWhatsappNumber(e.target.value)}
+                className="bg-transparent text-xs font-mono font-bold text-emerald-600 focus:outline-none w-28"
+              />
+            </div>
           </div>
         </div>
       </div>
