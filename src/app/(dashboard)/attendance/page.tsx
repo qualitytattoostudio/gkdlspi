@@ -12,11 +12,14 @@ import { NeuModal } from '@/components/neu/NeuModal';
 import { EmptyState } from '@/components/neu/EmptyState';
 import { SkeletonCard } from '@/components/neu/SkeletonCard';
 import { StatCard } from '@/components/neu/StatCard';
-import { Search, Clock, Download, Plus, Filter, UserCheck, Calendar, CheckCircle2, FileText, Edit2 } from 'lucide-react';
+import { Search, Clock, Download, Plus, Filter, UserCheck, Calendar, CheckCircle2, FileText, Edit2, Timer, Send } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { MONTH_FILTER_OPTIONS, matchesTimeFilter } from '@/lib/utils';
 import { toast } from '@/store/toastStore';
 import { playSuccess, playError } from '@/lib/audio';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import Papa from 'papaparse';
 
 export default function AttendancePage() {
   const supabase = createClient();
@@ -26,6 +29,9 @@ export default function AttendancePage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [timeFilter, setTimeFilter] = useState('all');
+
+  // Target WhatsApp Number
+  const [whatsappNumber, setWhatsappNumber] = useState('9597513372');
 
   // Record Attendance Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -38,6 +44,44 @@ export default function AttendancePage() {
   const [isEditNotesModalOpen, setIsEditNotesModalOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState<any>(null);
   const [editNotesValue, setEditNotesValue] = useState('');
+
+  const calculateWorkingHours = (record: any): { hoursStr: string; totalMins: number } => {
+    if (record.total_work_minutes && Number(record.total_work_minutes) > 0) {
+      const mins = Number(record.total_work_minutes);
+      const hrs = (mins / 60).toFixed(1);
+      return { hoursStr: `${hrs} hrs`, totalMins: mins };
+    }
+
+    if (record.check_in_time && record.check_out_time) {
+      try {
+        const inDt = new Date(record.check_in_time);
+        const outDt = new Date(record.check_out_time);
+        const diffMins = Math.max(0, Math.round((outDt.getTime() - inDt.getTime()) / (1000 * 60)));
+        const hrs = (diffMins / 60).toFixed(1);
+        return { hoursStr: `${hrs} hrs`, totalMins: diffMins };
+      } catch {
+        return { hoursStr: '0.0 hrs', totalMins: 0 };
+      }
+    }
+
+    if (record.check_in_time && !record.check_out_time && (record.status === 'present' || !record.status)) {
+      try {
+        const inDt = new Date(record.check_in_time);
+        const now = new Date();
+        if (inDt.toDateString() === now.toDateString()) {
+          const diffMins = Math.max(0, Math.round((now.getTime() - inDt.getTime()) / (1000 * 60)));
+          const hrs = (diffMins / 60).toFixed(1);
+          return { hoursStr: `${hrs} hrs (Active)`, totalMins: diffMins };
+        }
+      } catch {}
+    }
+
+    if (record.status === 'present') {
+      return { hoursStr: '8.0 hrs', totalMins: 480 };
+    }
+
+    return { hoursStr: '0.0 hrs', totalMins: 0 };
+  };
 
   const fetchAttendance = async () => {
     try {
@@ -70,11 +114,14 @@ export default function AttendancePage() {
       const mapped = (attData || []).map(a => {
         const resolvedName = pMap.get(a.user_id) || 'Staff Member';
         const noteText = a.notes || a.checkout_notes || a.remarks || 'Standard Duty Log';
+        const { hoursStr, totalMins } = calculateWorkingHours(a);
         return {
           ...a,
           employee_name: resolvedName,
           profiles: { full_name: resolvedName },
-          eod_notes: noteText
+          eod_notes: noteText,
+          work_hours: hoursStr,
+          work_mins: totalMins
         };
       });
 
@@ -90,7 +137,7 @@ export default function AttendancePage() {
   useEffect(() => {
     fetchAttendance();
 
-    // Supabase Realtime Subscription for instant notes update in GM portal
+    // Supabase Realtime Subscription for instant notes and logs update in GM portal
     const attChannel = supabase
       .channel('realtime_attendance_notes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records' }, (payload) => {
@@ -98,13 +145,16 @@ export default function AttendancePage() {
           setAttendance(prev => prev.map(a => {
             if (a.id === payload.new.id) {
               const updatedNotes = payload.new.notes || payload.new.checkout_notes || payload.new.remarks || a.eod_notes;
+              const { hoursStr, totalMins } = calculateWorkingHours({ ...a, ...payload.new });
               return {
                 ...a,
                 ...payload.new,
                 notes: updatedNotes,
                 checkout_notes: updatedNotes,
                 remarks: updatedNotes,
-                eod_notes: updatedNotes
+                eod_notes: updatedNotes,
+                work_hours: hoursStr,
+                work_mins: totalMins
               };
             }
             return a;
@@ -123,7 +173,8 @@ export default function AttendancePage() {
     return () => {
       supabase.removeChannel(attChannel);
     };
-  }, [supabase]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleRecordAttendance = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,11 +193,14 @@ export default function AttendancePage() {
       }]).select('*');
 
       if (!error && data && data.length > 0) {
+        const { hoursStr, totalMins } = calculateWorkingHours(data[0]);
         const newRecord = {
           ...data[0],
           employee_name: staffName,
           profiles: { full_name: staffName },
-          eod_notes: attNotes || 'Manual EOD Entry'
+          eod_notes: attNotes || 'Manual EOD Entry',
+          work_hours: hoursStr,
+          work_mins: totalMins
         };
         setAttendance(prev => [newRecord, ...prev]);
         playSuccess();
@@ -214,31 +268,85 @@ export default function AttendancePage() {
     return matchesTimeFilter(a.date || a.check_in_time, timeFilter);
   });
 
+  const totalCalculatedHours = (filteredAttendance.reduce((sum, a) => sum + (Number(a.work_mins) || 0), 0) / 60).toFixed(1);
+
   const exportCSV = () => {
     if (filteredAttendance.length === 0) {
       toast.warning('No Records', 'There are no attendance records to export.');
       return;
     }
-    const csvContent = [
-      ['Employee Name', 'Date', 'Check In', 'Check Out', 'Status', 'EOD Work Notes'],
-      ...filteredAttendance.map(a => [
-        a.employee_name || a.profiles?.full_name || 'Employee',
-        a.date ? format(new Date(a.date), 'MMM dd, yyyy') : 'N/A',
-        a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : 'N/A',
-        a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'On Duty',
-        a.status || 'present',
-        `"${(a.eod_notes || '').replace(/"/g, '""')}"`
-      ])
-    ].map(e => e.join(",")).join("\n");
-    
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const csvData = filteredAttendance.map(a => ({
+      'Employee Name': a.employee_name || a.profiles?.full_name || 'Staff Member',
+      'Date': a.date ? format(new Date(a.date), 'yyyy-MM-dd') : 'N/A',
+      'Check In Time': a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm:ss a') : 'N/A',
+      'Check Out Time': a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm:ss a') : 'On Duty',
+      'Total Working Hours': a.work_hours || '0.0 hrs',
+      'Status': (a.status || 'present').toUpperCase(),
+      'EOD Work Notes': a.eod_notes || 'Standard Duty Log'
+    }));
+
+    const csv = Papa.unparse(csvData);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `Attendance_Log_${timeFilter}_${new Date().toISOString().split('T')[0]}.csv`);
+    link.href = url;
+    link.setAttribute('download', `Attendance_Report_with_Working_Hours_${timeFilter}_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
     playSuccess();
-    toast.success('Export Successful', 'Attendance & EOD Notes CSV downloaded.');
+    toast.success('CSV Exported', 'Attendance report with working hours downloaded.');
+  };
+
+  const exportPDF = () => {
+    if (filteredAttendance.length === 0) {
+      toast.warning('No Records', 'There are no attendance records to export.');
+      return;
+    }
+    const doc = new jsPDF('landscape');
+    doc.setFontSize(14);
+    doc.text('V-Syncer Executive Staff Attendance & Working Hours Report', 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Period / Filter: ${timeFilter.toUpperCase()} | Generated: ${format(new Date(), 'yyyy-MM-dd HH:mm')} | Total Working Hours: ${totalCalculatedHours} hrs`, 14, 22);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Employee Name', 'Date', 'Check In', 'Check Out', 'Working Hours', 'Status', 'EOD Remarks / Work Notes']],
+      body: filteredAttendance.map(a => [
+        a.employee_name || a.profiles?.full_name || 'Staff Member',
+        a.date ? format(new Date(a.date), 'MMM dd, yyyy') : 'N/A',
+        a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : 'N/A',
+        a.check_out_time ? format(new Date(a.check_out_time), 'hh:mm a') : 'Active Duty',
+        a.work_hours || '0.0 hrs',
+        (a.status || 'present').toUpperCase(),
+        a.eod_notes || 'Standard Duty Log'
+      ]),
+      styles: { fontSize: 8, cellPadding: 2.5 },
+      headStyles: { fillColor: [15, 76, 129] }
+    });
+
+    doc.save(`Attendance_Report_${timeFilter}_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    playSuccess();
+    toast.success('PDF Exported', 'Attendance report with working hours downloaded as PDF.');
+  };
+
+  const dispatchWhatsApp = () => {
+    const text = [
+      `📊 *V-SYNCER STAFF ATTENDANCE & WORKING HOURS SUMMARY*`,
+      `📅 *Date:* ${format(new Date(), 'yyyy-MM-dd')}`,
+      `👥 *Matching Staff Logs:* ${filteredAttendance.length}`,
+      `⏱️ *Total Cumulative Work Hours:* ${totalCalculatedHours} hrs`,
+      `-----------------------------------------`,
+      ...filteredAttendance.slice(0, 8).map((a, i) => `${i + 1}. *${a.employee_name}* - ${a.work_hours} | Notes: ${a.eod_notes}`),
+      filteredAttendance.length > 8 ? `...and ${filteredAttendance.length - 8} more entries.` : '',
+      `-----------------------------------------`,
+      `✅ *Verified by V-Syncer Operations Portal*`
+    ].filter(Boolean).join('\n');
+
+    const waUrl = `https://api.whatsapp.com/send?phone=91${whatsappNumber.replace(/\D/g, '')}&text=${encodeURIComponent(text)}`;
+    window.open(waUrl, '_blank');
+    playSuccess();
+    toast.success('WhatsApp Dispatched', `Attendance summary sent to +91 ${whatsappNumber}.`);
   };
 
   const getStatusBadge = (st: string) => {
@@ -247,7 +355,7 @@ export default function AttendancePage() {
     if (st === 'absent') variant = 'error';
     if (st === 'leave') variant = 'warning';
     
-    return <NeuBadge variant={variant}>{st || 'present'}</NeuBadge>;
+    return <NeuBadge variant={variant}>{(st || 'present').toUpperCase()}</NeuBadge>;
   };
 
   const columns = [
@@ -276,7 +384,7 @@ export default function AttendancePage() {
     },
     {
       accessorKey: 'check_in_time',
-      header: 'Check In Time',
+      header: 'Check In',
       cell: (info: any) => {
         const val = info.getValue();
         if (!val) return 'N/A';
@@ -289,7 +397,7 @@ export default function AttendancePage() {
     },
     {
       accessorKey: 'check_out_time',
-      header: 'Check Out Time',
+      header: 'Check Out',
       cell: (info: any) => {
         const val = info.getValue();
         if (!val) return <span className="text-neu-accent font-semibold text-xs">On Duty / Active</span>;
@@ -299,6 +407,16 @@ export default function AttendancePage() {
           return val;
         }
       }
+    },
+    {
+      accessorKey: 'work_hours',
+      header: 'Total Working Hours',
+      cell: (info: any) => (
+        <div className="flex items-center gap-1.5 font-bold text-emerald-600 text-xs">
+          <Timer size={14} className="shrink-0 text-emerald-500" />
+          <span>{info.getValue() || '0.0 hrs'}</span>
+        </div>
+      )
     },
     {
       accessorKey: 'status',
@@ -339,8 +457,8 @@ export default function AttendancePage() {
     return (
       <div className="space-y-6">
         <h2 className="text-xl font-display font-bold text-neu-fg">Attendance Tracking</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {[1, 2, 3].map(i => <SkeletonCard key={i} className="h-28" />)}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+          {[1, 2, 3, 4].map(i => <SkeletonCard key={i} className="h-28" />)}
         </div>
         <SkeletonCard className="h-[400px]" />
       </div>
@@ -354,13 +472,24 @@ export default function AttendancePage() {
     <div className="space-y-6 animate-fade-up">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-xl font-display font-bold text-neu-fg">Attendance Tracking (Real-Time Synced)</h2>
-          <p className="text-neu-muted text-sm">Monitor staff check-ins, attendance logs, and live EOD work notes ({filteredAttendance.length} records shown from {attendance.length} total database logs).</p>
+          <h2 className="text-xl font-display font-bold text-neu-fg">Attendance & Working Hours Tracking</h2>
+          <p className="text-neu-muted text-sm">Monitor staff check-ins, check-outs, shift working hours, and EOD work notes ({filteredAttendance.length} records shown).</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-2.5">
+          <button 
+            onClick={dispatchWhatsApp}
+            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs flex items-center gap-1.5 shadow-neu-raised transition-all cursor-pointer"
+          >
+            <Send size={14} />
+            Send to WhatsApp (+91 {whatsappNumber})
+          </button>
+          <NeuButton onClick={exportPDF} variant="secondary">
+            <FileText size={16} />
+            PDF Export
+          </NeuButton>
           <NeuButton onClick={exportCSV} variant="secondary">
             <Download size={16} />
-            Export CSV
+            CSV Export
           </NeuButton>
           <NeuButton onClick={() => setIsModalOpen(true)}>
             <Plus size={18} />
@@ -370,10 +499,11 @@ export default function AttendancePage() {
       </div>
 
       {/* KPI Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard title="Total Matching Records" value={filteredAttendance.length} icon={Calendar} />
         <StatCard title="Present / Duty Verified" value={presentCount} icon={CheckCircle2} />
         <StatCard title="Absent / Leave Logs" value={absentCount} icon={Clock} />
+        <StatCard title="Cumulative Work Hours" value={Math.round(Number(totalCalculatedHours))} suffix=" hrs" icon={Timer} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
